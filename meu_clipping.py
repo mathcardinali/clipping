@@ -42,12 +42,17 @@ with st.sidebar:
             results = {}
             
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade OR \"modelo 2027\" OR \"modelo 2026\")"
+            # REGRA 3: Filtro de Grandes Mídias
+            media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
             with st.spinner("Fetching latest headlines and filtering noise..."):
                 for brand in brand_selection:
                     base_q = f"\"{brand}\" Brasil"
                     if target_launch:
                         base_q += launch_keywords
+                    
+                    # Aplicando o filtro de mídia à query base
+                    base_q += media_filter
                     
                     full_q = f"{base_q} after:{d_ini.strftime('%Y-%m-%d')} before:{d_end.strftime('%Y-%m-%d')}"
                     
@@ -67,9 +72,7 @@ with st.sidebar:
                                     "summary": "- Insert Comments Here -"
                                 })
                             
-                            # Keep only the top 3 highly relevant ones
-                            if len(brand_news) == 3:
-                                break
+                            # REGRA 4: Removida a trava de 3 notícias (if len(brand_news) == 3: break)
                                 
                         if brand_news: # Only add the brand if we found actual relevant news
                             results[brand] = brand_news
@@ -79,17 +82,9 @@ with st.sidebar:
 # --- 4. EDITING AREA ---
 if st.session_state.dossier_data:
     
-    st.header("📋 2. Clipboard para IA Externa")
-    st.info("Copie os links abaixo para processar no Gemini/ChatGPT com foco em Inovação e Produto.")
+    # REGRA 2: Bloco de Clipboard removido completamente.
     
-    links_text = "Analise os seguintes links com foco em LANÇAMENTOS, CX e estratégia de mercado no Brasil:\n\n"
-    for brand, items in st.session_state.dossier_data.items():
-        for item in items:
-            links_text += f"[{brand}] {item['title']}\nLink: {item['link']}\n\n"
-    
-    st.code(links_text, language="text")
-    
-    st.header("📝 3. Curate Insights")
+    st.header("📝 2. Curate Insights")
     st.info("Desmarque as notícias que não servem para o dossiê e cole suas análises nas caixas de texto.")
     
     for brand, items in st.session_state.dossier_data.items():
@@ -112,10 +107,11 @@ if st.session_state.dossier_data:
 
     # --- 5. FINALIZATION & EXPORT ---
     st.divider()
-    if st.button("📄 4. Finalize Dossier & Sync Feishu"):
+    if st.button("📄 3. Finalize Dossier & Sync Feishu"):
         d_ini_str = date_range[0].strftime('%m/%d')
         d_end_str = date_range[1].strftime('%m/%d')
         
+        # REGRA 1: Tradução dos cabeçalhos para Inglês/Chinês
         html_content = f"""
         <html>
         <head>
@@ -132,17 +128,18 @@ if st.session_state.dossier_data:
         </head>
         <body>
             <div class="header-box">
-                <h1 style="color: #1a237e; margin-bottom: 10px;">Automotive Market Intelligence Dossier</h1>
-                <p style="margin: 5px 0; font-size: 16px;"><strong>📍 Focus Country:</strong> Brazil</p>
-                <p style="margin: 5px 0; font-size: 16px;"><strong>📅 Period:</strong> {d_ini_str} to {d_end_str}</p>
-                <p style="margin: 5px 0; font-size: 16px;"><strong>👤 Researcher:</strong> Matheus Cardinali</p>
+                <h1 style="color: #1a237e; margin-bottom: 10px;">Automotive Market Intelligence Dossier / 汽车市场情报档案</h1>
+                <p style="margin: 5px 0; font-size: 16px;"><strong>📍 Focus Country / 重点国家:</strong> Brazil / 巴西</p>
+                <p style="margin: 5px 0; font-size: 16px;"><strong>📅 Period / 期间:</strong> {d_ini_str} to {d_end_str}</p>
+                <p style="margin: 5px 0; font-size: 16px;"><strong>👤 Researcher / 研究员:</strong> Matheus Cardinali</p>
             </div>
         """
         
+        # REGRA 1: Tradução no payload do Feishu
         feishu_elements = [
             {
                 "tag": "div",
-                "text": {"tag": "lark_md", "content": f"📍 **Focus Country:** Brazil\n📅 **Period:** {d_ini_str} to {d_end_str}"}
+                "text": {"tag": "lark_md", "content": f"📍 **Focus Country / 重点国家:** Brazil / 巴西\n📅 **Period / 期间:** {d_ini_str} to {d_end_str}"}
             },
             {"tag": "hr"}
         ]
