@@ -2,7 +2,9 @@ import streamlit as st
 import feedparser
 import requests
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time
+from time import mktime
+from deep_translator import GoogleTranslator
 
 # --- 1. CORE CONFIGURATION ---
 st.set_page_config(page_title="🚗 Automotive Pulse Digest", layout="wide")
@@ -44,13 +46,18 @@ with st.sidebar:
                     del st.session_state[key]
 
             d_ini, d_end = date_range
+            
+            # REGRA 2: Criação dos limites exatos de data (00:00:00 até 23:59:59)
+            start_datetime = datetime.combine(d_ini, dt_time.min)
+            end_datetime = datetime.combine(d_end, dt_time.max)
+            
             results = {}
             
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade OR \"modelo 2027\" OR \"modelo 2026\")"
             # REGRA 3: Filtro de Grandes Mídias
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
-            with st.spinner("Fetching latest headlines and filtering noise..."):
+            with st.spinner("Fetching headlines, filtering dates, and translating..."):
                 for brand in brand_selection:
                     base_q = f"\"{brand}\" Brasil"
                     if target_launch:
@@ -59,6 +66,7 @@ with st.sidebar:
                     # Aplicando o filtro de mídia à query base
                     base_q += media_filter
                     
+                    # O Google News ainda recebe o filtro para reduzir o volume inicial
                     full_q = f"{base_q} after:{d_ini.strftime('%Y-%m-%d')} before:{d_end.strftime('%Y-%m-%d')}"
                     
                     safe_q = urllib.parse.quote_plus(full_q)
@@ -71,13 +79,33 @@ with st.sidebar:
                         for entry in feed.entries:
                             # STRICT FILTER: The brand must actually be in the headline to avoid Google News "spiraling"
                             if safe_brand_name in entry.title.lower():
+                                
+                                # REGRA 2: Validação Rigorosa de Datas no Python
+                                if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                                    pub_date = datetime.fromtimestamp(mktime(entry.published_parsed))
+                                    # Descarte da notícia se estiver fora do intervalo estrito
+                                    if not (start_datetime <= pub_date <= end_datetime):
+                                        continue
+                                else:
+                                    # Ignorar se a notícia não trouxer a data por alguma falha do RSS
+                                    continue
+                                
+                                # REGRA 1: Tradução dos Títulos com Fallback
+                                try:
+                                    en_title = GoogleTranslator(source='auto', target='en').translate(entry.title)
+                                    zh_title = GoogleTranslator(source='auto', target='zh-CN').translate(entry.title)
+                                    final_title = f"{en_title} / {zh_title}"
+                                except Exception:
+                                    # Fallback em caso de falha na API do tradutor
+                                    final_title = entry.title
+
                                 brand_news.append({
-                                    "title": entry.title, 
+                                    "title": final_title, 
                                     "link": entry.link, 
                                     "summary": "- Insert Comments Here -"
                                 })
                             
-                            # REGRA 4: Removida a trava de 3 notícias
+                            # REGRA 4: Removida a trava de limite de notícias
                                 
                         if brand_news: # Only add the brand if we found actual relevant news
                             results[brand] = brand_news
@@ -86,8 +114,6 @@ with st.sidebar:
 
 # --- 4. EDITING AREA ---
 if st.session_state.dossier_data:
-    
-    # REGRA 2: Bloco de Clipboard removido completamente.
     
     st.header("📝 2. Curate Insights")
     st.info("Selecione as notícias que servirão para o dossiê e cole suas análises nas caixas de texto.")
@@ -131,7 +157,7 @@ if st.session_state.dossier_data:
         d_ini_str = date_range[0].strftime('%m/%d')
         d_end_str = date_range[1].strftime('%m/%d')
         
-        # REGRA 1: Tradução dos cabeçalhos para Inglês/Chinês
+        # Cabeçalhos Bilíngues
         html_content = f"""
         <html>
         <head>
@@ -155,7 +181,7 @@ if st.session_state.dossier_data:
             </div>
         """
         
-        # REGRA 1: Tradução no payload do Feishu
+        # Payload do Feishu Bilíngue
         feishu_elements = [
             {
                 "tag": "div",
@@ -203,7 +229,6 @@ if st.session_state.dossier_data:
             payload = {
                 "msg_type": "interactive",
                 "card": {
-                    # REGRA 1: Cabeçalho principal bilíngue
                     "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Market Intelligence Dossier / 汽车市场情报档案"}, "template": "blue"},
                     "elements": feishu_elements
                 }
