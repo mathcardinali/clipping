@@ -38,6 +38,11 @@ with st.sidebar:
 
     if st.button("🚀 1. Fetch News Links"):
         if len(date_range) == 2:
+            # Limpa os estados de seleção anteriores para garantir a Regra de Ouro (Tudo desmarcado ao iniciar)
+            for key in list(st.session_state.keys()):
+                if key.startswith("keep_"):
+                    del st.session_state[key]
+
             d_ini, d_end = date_range
             results = {}
             
@@ -72,7 +77,7 @@ with st.sidebar:
                                     "summary": "- Insert Comments Here -"
                                 })
                             
-                            # REGRA 4: Removida a trava de 3 notícias (if len(brand_news) == 3: break)
+                            # REGRA 4: Removida a trava de 3 notícias
                                 
                         if brand_news: # Only add the brand if we found actual relevant news
                             results[brand] = brand_news
@@ -85,16 +90,31 @@ if st.session_state.dossier_data:
     # REGRA 2: Bloco de Clipboard removido completamente.
     
     st.header("📝 2. Curate Insights")
-    st.info("Desmarque as notícias que não servem para o dossiê e cole suas análises nas caixas de texto.")
+    st.info("Selecione as notícias que servirão para o dossiê e cole suas análises nas caixas de texto.")
     
+    # NOVOS BOTÕES: Selecionar/Desmarcar Tudo
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ Select All / 全选"):
+            for brand, items in st.session_state.dossier_data.items():
+                for idx in range(len(items)):
+                    st.session_state[f"keep_{brand}_{idx}"] = True
+    with col2:
+        if st.button("❌ Deselect All / 取消全选"):
+            for brand, items in st.session_state.dossier_data.items():
+                for idx in range(len(items)):
+                    st.session_state[f"keep_{brand}_{idx}"] = False
+    
+    st.divider()
+
     for brand, items in st.session_state.dossier_data.items():
         st.subheader(f"🏎️ {brand.upper()}")
         
         for idx, item in enumerate(items):
-            # Checkbox para permitir ao usuário vetar a notícia do dossiê final
-            keep_checkbox = st.checkbox(f"✅ Incluir no Dossiê Final", value=True, key=f"keep_{brand}_{idx}")
+            # REGRA DE OURO: Checkbox para permitir ao usuário vetar/incluir a notícia (Padrão: False/Desmarcado)
+            keep_checkbox = st.checkbox(f"✅ Incluir no Dossiê Final / 包含在最终档案中", value=False, key=f"keep_{brand}_{idx}")
             
-            st.markdown(f"**Source:** [{item['title']}]({item['link']})")
+            st.markdown(f"**Source / 来源:** [{item['title']}]({item['link']})")
             
             # Text area remains the same, but we save its output to session state dynamically
             st.session_state.dossier_data[brand][idx]['summary'] = st.text_area(
@@ -147,16 +167,16 @@ if st.session_state.dossier_data:
         has_any_content = False
         
         for brand, items in st.session_state.dossier_data.items():
-            # Filtrar apenas os itens que o usuário deixou marcados no Checkbox
-            kept_items = [item for idx, item in enumerate(items) if st.session_state.get(f"keep_{brand}_{idx}", True)]
+            # Filtrar apenas os itens que o usuário deixou marcados no Checkbox (Fallback False acompanhando a regra de ouro)
+            kept_items = [item for idx, item in enumerate(items) if st.session_state.get(f"keep_{brand}_{idx}", False)]
             
-            if kept_items: # Só adiciona a marca se sobrar alguma notícia válida
+            if kept_items: # Só adiciona a marca se sobrar alguma notícia válida selecionada
                 has_any_content = True
                 html_content += f"<div class='brand-sec'><h2>{brand}</h2>"
                 links_md = []
                 
                 for item in kept_items:
-                    item_title = item.get('title', 'Link da Notícia')
+                    item_title = item.get('title', 'Link da Notícia / 新闻链接')
                     item_link = item.get('link', '#')
                     item_summary = item.get('summary', '')
 
@@ -183,12 +203,13 @@ if st.session_state.dossier_data:
             payload = {
                 "msg_type": "interactive",
                 "card": {
-                    "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Pulse Digest"}, "template": "blue"},
+                    # REGRA 1: Cabeçalho principal bilíngue
+                    "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Market Intelligence Dossier / 汽车市场情报档案"}, "template": "blue"},
                     "elements": feishu_elements
                 }
             }
             res = requests.post(WEBHOOK_URL, json=payload)
             if res.status_code == 200:
-                st.success("Dossier finalized and links synced to Feishu!")
+                st.success("Dossier finalized and links synced to Feishu! / 档案已完成并同步至Feishu！")
         else:
-            st.warning("Nenhuma notícia foi selecionada. Marque os checkboxes das notícias que deseja incluir no dossiê.")
+            st.warning("No news selected. Please check the boxes of the news you want to include. / 未选择任何新闻。请勾选您要包含在档案中的新闻。")
