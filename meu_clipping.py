@@ -2,6 +2,7 @@ import streamlit as st
 import feedparser
 import requests
 import urllib.parse
+import re # --- MODIFICAÇÃO 3: Importação de Regex para tratamento de links ---
 from datetime import datetime, timedelta, time as dt_time
 from time import mktime
 from deep_translator import GoogleTranslator
@@ -13,6 +14,36 @@ st.markdown("🚗 Automotive Pulse Digest")
 
 # Feishu Webhook
 WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/8f561d21-2a4c-4726-bff3-c0bf5d9c35a5"
+
+# --- MODIFICAÇÃO 1: Variável global para o link do relatório na nuvem ---
+# Cole aqui o link exato de onde o PDF/HTML do relatório final será hospedado.
+# Ele será utilizado no rodapé do card enviado para o Lark.
+REPORT_URL = "https://seu-link-da-nuvem-aqui.com/relatorio.pdf"
+# ------------------------------------------------------------------------
+
+# --- MODIFICAÇÃO 3: Função segura de tradução (Ignora links e trata erros) ---
+def safe_translate(text, target_lang):
+    try:
+        # Encontra todos os links brutos no texto (começando com http ou https)
+        urls = re.findall(r'(https?://[^\s]+)', text)
+        
+        # Substitui os links por placeholders temporários para proteger na tradução
+        temp_text = text
+        for i, url in enumerate(urls):
+            temp_text = temp_text.replace(url, f"[[URL_{i}]]")
+        
+        # Realiza a tradução do texto limpo
+        translated_text = GoogleTranslator(source='auto', target=target_lang).translate(temp_text)
+        
+        # Restaura os links originais no texto traduzido
+        for i, url in enumerate(urls):
+            translated_text = translated_text.replace(f"[[URL_{i}]]", url)
+            
+        return translated_text
+    except Exception as e:
+        # Fallback: retorna o texto original em caso de qualquer falha de API ou parsing
+        return text
+# -----------------------------------------------------------------------------
 
 # --- 2. SESSION STATE ---
 if 'dossier_data' not in st.session_state:
@@ -90,14 +121,11 @@ with st.sidebar:
                                     # Ignorar se a notícia não trouxer a data por alguma falha do RSS
                                     continue
                                 
-                                # REGRA 1: Tradução dos Títulos com Fallback
-                                try:
-                                    en_title = GoogleTranslator(source='auto', target='en').translate(entry.title)
-                                    zh_title = GoogleTranslator(source='auto', target='zh-CN').translate(entry.title)
-                                    final_title = f"{en_title} / {zh_title}"
-                                except Exception:
-                                    # Fallback em caso de falha na API do tradutor
-                                    final_title = entry.title
+                                # --- MODIFICAÇÃO 3: Uso da nova função segura de tradução ---
+                                en_title = safe_translate(entry.title, 'en')
+                                zh_title = safe_translate(entry.title, 'zh-CN')
+                                final_title = f"{en_title} / {zh_title}"
+                                # -----------------------------------------------------------
 
                                 brand_news.append({
                                     "title": final_title, 
@@ -224,7 +252,18 @@ if st.session_state.dossier_data:
         html_content += "</body></html>"
         
         if has_any_content:
+            # --- MODIFICAÇÃO 1: HTML finalizado e entregue primeiro na tela ---
             st.download_button("📥 Download Final Dossier (HTML)", html_content, file_name=f"Automotive_Dossier_{d_ini_str.replace('/','')}.html", mime="text/html")
+            
+            # --- MODIFICAÇÃO 2: Adição do Rodapé Bilíngue ao Feishu Card apontando para REPORT_URL ---
+            feishu_elements.append({
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md", 
+                    "content": f"[Click here to access the full news summary]({REPORT_URL})\n[点击此处访问完整新闻摘要]({REPORT_URL})"
+                }
+            })
+            # ----------------------------------------------------------------------------------------
             
             payload = {
                 "msg_type": "interactive",
