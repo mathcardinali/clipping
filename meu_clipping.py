@@ -100,8 +100,7 @@ def resumir_noticia_com_gemini(texto, api_key):
         
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
+        model = genai.GenerativeModel('gemini-pro')        
         system_instruction = """
         Role & Instructions:
         Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
