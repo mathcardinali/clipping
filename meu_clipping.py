@@ -34,16 +34,32 @@ def safe_translate(text, target_lang):
     except Exception as e:
         return text
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO) ---
+# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO AVANÇADA) ---
 def extrair_texto_da_noticia(url):
     try:
-        html_baixado = trafilatura.fetch_url(url)
-        if html_baixado:
-            texto = trafilatura.extract(html_baixado)
+        # Criando o nosso "disfarce" de navegador real
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Referer': 'https://news.google.com/'
+        }
+        
+        # O requests tenta entrar no site com o disfarce (espera no máximo 15 segundos)
+        resposta = requests.get(url, headers=headers, timeout=15)
+        
+        # Se o site deixou a gente entrar (Status 200 = OK)
+        if resposta.status_code == 200:
+            # Passamos o HTML sujo para o trafilatura limpar e pegar só a notícia
+            texto = trafilatura.extract(resposta.text)
             return texto if texto else "Erro: Conteúdo não encontrado no HTML."
-        return "Erro: Falha ao acessar a página."
+        else:
+            return f"Erro: O site bloqueou o robô. Código HTTP: {resposta.status_code}"
+            
+    except requests.exceptions.Timeout:
+        return "Erro: O site demorou muito para responder."
     except Exception as e:
         return f"Erro na extração: {e}"
+# -----------------------------------------------------------------------------
 
 # --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
 def resumir_noticia_com_gemini(texto, api_key):
