@@ -6,18 +6,22 @@ import re
 import json
 import html
 import time
+import os # Para gerenciar caminhos de pastas no Windows
 from datetime import datetime, timedelta, time as dt_time
 from time import mktime
 from deep_translator import GoogleTranslator
 import trafilatura 
 import google.generativeai as genai
 from googlenewsdecoder import gnewsdecoder
+from xhtml2pdf import pisa # Biblioteca para conversão de PDF
 
 # --- 1. CORE CONFIGURATION ---
 st.set_page_config(page_title="🚗 Automotive Pulse Digest", layout="wide")
 st.title("🚗 Automotive Pulse Digest")
 st.markdown("🚗 Automotive Pulse Digest")
 
+# Caminho específico para o seu usuário
+DOWNLOAD_PATH = r"C:\Users\BR000073\Downloads"
 # Feishu Webhook
 WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/8f561d21-2a4c-4726-bff3-c0bf5d9c35a5"
 
@@ -82,11 +86,11 @@ def extrair_texto_da_noticia(url):
             return f"- O site ({dominio_real}) bloqueou o robô (Erro HTTP {resposta.status_code}). -"
             
     except requests.exceptions.Timeout:
-        return "- O site final demorou muito para responder. -"
+        return "- O site final demorou muito para responder e derrubou a conexão do Agente. -"
     except Exception as e:
-        return f"- Erro fatal na conexão: {e} -"
+        return f"- Erro fatal na conexão com o site: {e} -"
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI COM SYSTEM INSTRUCTIONS ESTÁTICAS) ---
+# --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI COM OTIMIZAÇÃO DE CUSTO) ---
 def resumir_noticia_com_gemini(texto, api_key):
     if not api_key:
         return "- Erro: Chave de API não encontrada nos Secrets. -"
@@ -97,7 +101,7 @@ def resumir_noticia_com_gemini(texto, api_key):
     try:
         genai.configure(api_key=api_key)
         
-        # 1. Definimos a instrução de sistema uma única vez
+        # Role & Instructions estáticas (Otimiza Caching/Custo)
         instructions = """
         Role & Instructions:
         Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
@@ -112,7 +116,7 @@ def resumir_noticia_com_gemini(texto, api_key):
         Customer Impact (Bilingual) — A final short paragraph.
         """
         
-        # 2. Busca dinâmica do melhor modelo disponível
+        # Busca dinâmica do melhor modelo (Prioriza Flash que é mais barato)
         model_name = None
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
@@ -120,35 +124,40 @@ def resumir_noticia_com_gemini(texto, api_key):
                     model_name = m.name
                     break
         
-        if not model_name:
-            model_name = 'gemini-1.5-flash' # Fallback para o nome padrão
+        if not model_name: model_name = 'gemini-1.5-flash'
 
-        # 3. AJUSTE DE OTIMIZAÇÃO: Passamos a instrução como system_instruction
-        # Isso otimiza o custo e o processamento da API
-        model = genai.GenerativeModel(
-            model_name=model_name,
-            system_instruction=instructions
-        )
+        # Instancia com as instruções de sistema
+        model = genai.GenerativeModel(model_name=model_name, system_instruction=instructions)
         
-        # 4. Limitamos o texto de entrada para economizar tokens (Trunking)
-        # 6000 caracteres costumam cobrir o essencial estratégico de qualquer notícia
+        # Trunking: Envia apenas os primeiros 6000 caracteres (economia de tokens)
         texto_otimizado = texto[:6000]
         
-        tentativas = 3
-        for tentativa in range(tentativas):
+        # Lógica de retentativa para erro 429
+        for tentativa in range(3):
             try:
-                # Enviamos apenas a notícia, pois as regras já estão "estáticas" no modelo
                 response = model.generate_content(texto_otimizado)
                 return response.text.strip()
             except Exception as api_error:
-                if "429" in str(api_error) or "Quota" in str(api_error):
-                    if tentativa < tentativas - 1:
-                        time.sleep(12) # Pausa para respirar a cota
-                        continue
+                if "429" in str(api_error):
+                    time.sleep(12)
+                    continue
                 return f"- Erro da API: {api_error} -"
                     
     except Exception as e:
-        return f"- Erro na configuração do Agente: {e} -"
+        return f"- Erro na configuração: {e} -"
+
+# --- Função para salvar o PDF fisicamente no Windows ---
+def salvar_pdf_localmente(html_content, filename):
+    if not os.path.exists(DOWNLOAD_PATH):
+        return False, f"Caminho {DOWNLOAD_PATH} não encontrado no seu computador."
+    
+    full_path = os.path.join(DOWNLOAD_PATH, filename.replace(".html", ".pdf"))
+    try:
+        with open(full_path, "wb") as f:
+            pisa_status = pisa.CreatePDF(html_content, dest=f)
+        return not pisa_status.err, full_path
+    except Exception as e:
+        return False, str(e)
 
 # --- 2. SESSION STATE ---
 if 'dossier_data' not in st.session_state:
@@ -170,15 +179,10 @@ brands_by_origin = {
 
 with st.sidebar:
     st.header("⚙️ Market Parameters")
-    
-    if gemini_api_key:
-        st.success("✅ Agente de IA Conectado")
-    else:
-        st.error("⚠️ Falta GEMINI_API_KEY nos secrets!")
+    if gemini_api_key: st.success("✅ IA Conectada")
+    else: st.error("⚠️ Sem GEMINI_API_KEY!")
     st.divider()
-    
     target_launch = st.checkbox("🎯 Focar em Lançamentos/Segredos", value=False)
-    
     origins = st.multiselect("Origins:", list(brands_by_origin.keys()), default=["China"])
     available = []
     for o in origins: available.extend(brands_by_origin[o])
@@ -192,80 +196,63 @@ with st.sidebar:
         elif len(date_range) == 2:
             st.session_state.step1_complete = False
             for key in list(st.session_state.keys()):
-                if key.startswith("keep_"):
-                    del st.session_state[key]
+                if key.startswith("keep_"): del st.session_state[key]
 
             d_ini, d_end = date_range
             start_datetime = datetime.combine(d_ini, dt_time.min)
             end_datetime = datetime.combine(d_end, dt_time.max)
-            
             results = {}
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade OR \"modelo 2027\" OR \"modelo 2026\")"
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
-            with st.spinner("Agent is working: Fetching and summarizing..."):
+            with st.spinner("Agent is working: Fetching, Reading and Summarizing..."):
                 for brand in brand_selection:
                     base_q = f"\"{brand}\" Brasil"
-                    if target_launch:
-                        base_q += launch_keywords
-                    
+                    if target_launch: base_q += launch_keywords
                     base_q += media_filter
                     full_q = f"{base_q} after:{d_ini.strftime('%Y-%m-%d')} before:{d_end.strftime('%Y-%m-%d')}"
-                    
                     safe_q = urllib.parse.quote_plus(full_q)
                     feed = feedparser.parse(f"https://news.google.com/rss/search?q={safe_q}&hl=pt-BR&gl=BR")
                     
                     if feed.entries:
                         brand_news = []
-                        safe_brand_name = brand.lower()
-                        
                         for entry in feed.entries:
-                            if safe_brand_name in entry.title.lower():
+                            if brand.lower() in entry.title.lower():
                                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
                                     pub_date = datetime.fromtimestamp(mktime(entry.published_parsed))
-                                    if not (start_datetime <= pub_date <= end_datetime):
-                                        continue
-                                else:
-                                    continue
+                                    if not (start_datetime <= pub_date <= end_datetime): continue
+                                else: continue
                                 
                                 en_title = safe_translate(entry.title, 'en')
                                 zh_title = safe_translate(entry.title, 'zh-CN')
-                                final_title = f"{en_title} / {zh_title}"
-
-                                conteudo_completo = extrair_texto_da_noticia(entry.link)
-                                resumo_gerado = resumir_noticia_com_gemini(conteudo_completo, gemini_api_key)
                                 
-                                # Pausa de segurança para não estourar cota gratuita
-                                time.sleep(2) 
+                                # AÇÃO DO AGENTE VIRTUAL
+                                texto_full = extrair_texto_da_noticia(entry.link)
+                                resumo = resumir_noticia_com_gemini(texto_full, gemini_api_key)
+                                time.sleep(2) # Pausa de segurança
 
                                 brand_news.append({
-                                    "title": final_title, 
+                                    "title": f"{en_title} / {zh_title}", 
                                     "link": entry.link, 
-                                    "full_text": conteudo_completo, 
-                                    "summary": resumo_gerado 
+                                    "summary": resumo
                                 })
-                                
-                        if brand_news: 
-                            results[brand] = brand_news
-                            
+                        if brand_news: results[brand] = brand_news
             st.session_state.dossier_data = results
 
 # --- 4. EDITING AREA ---
 if st.session_state.dossier_data:
     st.header("📝 2. Curate Insights")
-    st.info("Resumos gerados automaticamente pelo Agente Virtual.")
+    st.info("Resumos gerados automaticamente. Revise e selecione os itens para o PDF.")
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("✅ Select All / 全选"):
+        if st.button("✅ Select All"):
             for brand, items in st.session_state.dossier_data.items():
-                for idx in range(len(items)):
-                    st.session_state[f"keep_{brand}_{idx}"] = True
+                for idx in range(len(items)): st.session_state[f"keep_{brand}_{idx}"] = True
     with col2:
-        if st.button("❌ Deselect All / 取消全选"):
+        if st.button("❌ Deselect All"):
             for brand, items in st.session_state.dossier_data.items():
-                for idx in range(len(items)):
-                    st.session_state[f"keep_{brand}_{idx}"] = False
+                for idx in range(len(items)): st.session_state[f"keep_{brand}_{idx}"] = False
     
     st.divider()
 
@@ -273,118 +260,62 @@ if st.session_state.dossier_data:
         st.subheader(f"🏎️ {brand.upper()}")
         for idx, item in enumerate(items):
             keep_checkbox = st.checkbox(f"✅ Incluir no Dossiê Final", value=False, key=f"keep_{brand}_{idx}")
-            st.markdown(f"**Source / 来源:** [{item['title']}]({item['link']})")
-            
-            st.session_state.dossier_data[brand][idx]['summary'] = st.text_area(
-                label=f"Edit Notes: {brand} - {idx}",
-                value=item['summary'],
-                height=250, 
-                key=f"edit_{brand}_{idx}",
-                label_visibility="collapsed"
-            )
+            st.markdown(f"**Source:** [{item['title']}]({item['link']})")
+            st.session_state.dossier_data[brand][idx]['summary'] = st.text_area(label=f"Edit {brand}-{idx}", value=item['summary'], height=250, key=f"edit_{brand}_{idx}", label_visibility="collapsed")
 
-    # --- 5. FINALIZATION & EXPORT ---
+    # --- 5. FINALIZATION & PDF (A MUDANÇA ESTÁ AQUI) ---
     st.divider()
     
-    if st.button("📄 3. ETAPA 1: Gerar Relatório HTML"):
-        d_ini_str = date_range[0].strftime('%m/%d')
-        d_end_str = date_range[1].strftime('%m/%d')
+    if st.button("📄 3. Gerar PDF e Salvar em Downloads"):
+        # Estilo HTML para o PDF
+        html_content = """<html><head><meta charset="UTF-8"><style>body { font-family: Arial, sans-serif; padding: 30px; } h1 { color: #1a237e; } h2 { color: #0d47a1; border-bottom: 2px solid #eee; } .card { margin-bottom: 25px; padding: 15px; border: 1px solid #eee; }</style></head><body>"""
+        html_content += f"<h1>Automotive Market Intelligence Dossier</h1><p><b>Researcher:</b> Matheus Cardinali</p><hr>"
         
-        html_content = f"""
-        <html>
-        <head>
-            <meta charset="UTF-8">
-            <style>
-                body {{ font-family: 'Segoe UI', Arial; padding: 40px; color: #333; line-height: 1.6; }}
-                .header-box {{ border-bottom: 3px solid #1a237e; padding-bottom: 20px; margin-bottom: 30px; }}
-                .brand-sec {{ margin-top: 40px; border-left: 5px solid #1a237e; padding-left: 20px; }}
-                h2 {{ color: #1a237e; text-transform: uppercase; border-bottom: 1px solid #ccc; padding-bottom: 5px; }}
-                .news-card {{ background: #f8f9fa; padding: 20px; margin-bottom: 20px; border-radius: 8px; border: 1px solid #eee; }}
-                .news-title {{ font-weight: bold; font-size: 18px; color: #0056b3; text-decoration: none; display: block; margin-bottom: 10px; }}
-                p {{ text-align: justify; font-size: 15px; white-space: pre-wrap; }}
-            </style>
-        </head>
-        <body>
-            <div class="header-box">
-                <h1 style="color: #1a237e; margin-bottom: 10px;">Automotive Market Intelligence Dossier / 汽车市场情报档案</h1>
-                <p style="margin: 5px 0; font-size: 16px;"><strong>📍 Focus Country / 重点国家:</strong> Brazil / 巴西</p>
-                <p style="margin: 5px 0; font-size: 16px;"><strong>📅 Period / 期间:</strong> {d_ini_str} to {d_end_str}</p>
-                <p style="margin: 5px 0; font-size: 16px;"><strong>👤 Researcher / 研究员:</strong> Matheus Cardinali</p>
-            </div>
-        """
-        
-        feishu_elements_base = [
-            {
-                "tag": "div",
-                "text": {"tag": "lark_md", "content": f"📍 **Focus Country / 重点国家:** Brazil / 巴西\n📅 **Period / 期间:** {d_ini_str} to {d_end_str}"}
-            },
-            {"tag": "hr"}
-        ]
-        
+        feishu_base = []
         has_any_content = False
         
         for brand, items in st.session_state.dossier_data.items():
             kept_items = [item for idx, item in enumerate(items) if st.session_state.get(f"keep_{brand}_{idx}", False)]
             if kept_items: 
                 has_any_content = True
-                html_content += f"<div class='brand-sec'><h2>{brand}</h2>"
+                html_content += f"<h2>{brand.upper()}</h2>"
                 links_md = []
                 for item in kept_items:
-                    item_title = item.get('title', 'Link da Notícia / 新闻链接')
-                    item_link = item.get('link', '#')
-                    item_summary = item.get('summary', '')
-
-                    html_content += f"""
-                    <div class='news-card'>
-                        <a class='news-title' href='{item_link}'>{item_title}</a>
-                        <p>{item_summary}</p>
-                    </div>
-                    """
-                    links_md.append(f"• [{item_title}]({item_link})")
-                
-                html_content += "</div>"
-                feishu_elements_base.append({
-                    "tag": "div", 
-                    "text": {"tag": "lark_md", "content": f"**{brand.upper()}**\n" + "\n".join(links_md)}
-                })
-                feishu_elements_base.append({"tag": "hr"})
+                    html_content += f"<div class='card'><p><b>{item['title']}</b></p><p>{item['summary']}</p></div>"
+                    links_md.append(f"• [{item['title']}]({item['link']})")
+                feishu_base.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{brand.upper()}**\n" + "\n".join(links_md)}})
 
         html_content += "</body></html>"
         
         if has_any_content:
-            st.session_state.html_content = html_content
-            st.session_state.feishu_elements_base = feishu_elements_base
-            st.session_state.filename = f"Automotive_Dossier_{d_ini_str.replace('/','')}.html"
-            st.session_state.step1_complete = True
+            filename = f"Automotive_Dossier_{datetime.now().strftime('%d%m_%H%M')}.pdf"
+            # CHAMADA DA FUNÇÃO DE SALVAMENTO AUTOMÁTICO
+            sucesso, caminho_ou_erro = salvar_pdf_localmente(html_content, filename)
+            
+            if sucesso:
+                st.success(f"✅ PDF salvo com sucesso em: {caminho_ou_erro}")
+                st.session_state.feishu_elements_base = feishu_base
+                st.session_state.step1_complete = True
+            else:
+                st.error(f"Erro ao salvar PDF: {caminho_ou_erro}")
         else:
-            st.warning("No news selected.")
-            st.session_state.step1_complete = False
+            st.warning("Selecione notícias antes de gerar o relatório.")
 
+    # --- ETAPA LARK ---
     if st.session_state.get('step1_complete', False):
-        st.success("👉 Relatório HTML gerado!")
-        st.download_button("📥 Download Final Dossier (HTML)", st.session_state.html_content, file_name=st.session_state.filename, mime="text/html")
-        
-        st.markdown("### 📤 4. ETAPA 2: Envio para o Lark / Feishu")
-        user_report_url = st.text_input("🔗 Cole o link público do PDF:")
+        st.markdown("### 📤 4. Envio para o Lark / Feishu")
+        user_report_url = st.text_input("🔗 Cole o link público do PDF hospedado na nuvem:")
         
         if st.button("🚀 Confirmar Link e Enviar Lark Card"):
             if user_report_url.strip() != "":
-                top_link_element = {
-                    "tag": "div",
-                    "text": {
-                        "tag": "lark_md", 
-                        "content": f"**⭐✨ [CLICK HERE TO ACCESS THE FULL NEWS SUMMARY]({user_report_url.strip()}) ✨⭐**\n**⭐✨ [点击此处访问完整新闻摘要]({user_report_url.strip()}) ✨⭐**"
-                    }
-                }
-                final_feishu_elements = [top_link_element, {"tag": "hr"}] + st.session_state.feishu_elements_base
                 payload = {
                     "msg_type": "interactive",
                     "card": {
                         "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Market Intelligence Dossier"}, "template": "blue"},
-                        "elements": final_feishu_elements
+                        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"**⭐✨ [ACCESS FULL NEWS SUMMARY]({user_report_url.strip()}) ✨⭐**"}}, {"tag": "hr"}] + st.session_state.feishu_elements_base
                     }
                 }
                 res = requests.post(WEBHOOK_URL, json=payload)
                 if res.status_code == 200:
-                    st.success("Enviado com sucesso!")
+                    st.success("Dossier enviado ao Lark!")
                     st.balloons()
