@@ -4,4 +4,3 @@ requests
 deep-translator
 trafilatura
 google-generativeai
-base64
