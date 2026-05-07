@@ -5,12 +5,13 @@ import urllib.parse
 import re 
 import json
 import html
+import time
 from datetime import datetime, timedelta, time as dt_time
 from time import mktime
 from deep_translator import GoogleTranslator
 import trafilatura 
 import google.generativeai as genai
-from googlenewsdecoder import gnewsdecoder # <-- NOVO IMPORT
+from googlenewsdecoder import gnewsdecoder
 
 # --- 1. CORE CONFIGURATION ---
 st.set_page_config(page_title="🚗 Automotive Pulse Digest", layout="wide")
@@ -40,17 +41,14 @@ def safe_translate(text, target_lang):
 # --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO COM DESCRIPTOGRAFIA AVANÇADA) ---
 def extrair_texto_da_noticia(url):
     try:
-        # 1. BYPASS DEFINITIVO: Quebrando a criptografia do Google News
         if "news.google.com" in url:
             try:
-                # Tenta usar a biblioteca oficial (Plano A)
                 resultado = gnewsdecoder(url)
                 if isinstance(resultado, dict) and resultado.get("status"):
                     url = resultado.get("decoded_url")
                 elif isinstance(resultado, str) and resultado.startswith("http"):
                     url = resultado
             except Exception:
-                # Engenharia Reversa do token dinâmico (Plano B)
                 try:
                     resp_g = requests.get(url, timeout=10)
                     match = re.search(r'data-p="([^"]+)"', resp_g.text)
@@ -65,7 +63,6 @@ def extrair_texto_da_noticia(url):
                 except Exception:
                     pass
 
-        # 2. Bate na porta do site de notícias real
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
@@ -80,16 +77,16 @@ def extrair_texto_da_noticia(url):
             if texto and len(texto) > 150:
                 return texto
             else:
-                return f"- Acesso liberado ao site ({dominio_real}), mas a IA não achou texto longo o suficiente (Pode ser uma página de Fotos, Vídeo ou Paywall restrito). -"
+                return f"- Acesso liberado ao site ({dominio_real}), mas a IA não achou texto longo o suficiente. -"
         else:
             return f"- O site ({dominio_real}) bloqueou o robô (Erro HTTP {resposta.status_code}). -"
             
     except requests.exceptions.Timeout:
-        return "- O site final demorou muito para responder e derrubou a conexão do Agente. -"
+        return "- O site final demorou muito para responder. -"
     except Exception as e:
-        return f"- Erro fatal na conexão com o site: {e} -"
+        return f"- Erro fatal na conexão: {e} -"
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI INTELIGENTE) ---
+# --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI COM SYSTEM INSTRUCTIONS ESTÁTICAS) ---
 def resumir_noticia_com_gemini(texto, api_key):
     if not api_key:
         return "- Erro: Chave de API não encontrada nos Secrets. -"
@@ -100,26 +97,8 @@ def resumir_noticia_com_gemini(texto, api_key):
     try:
         genai.configure(api_key=api_key)
         
-        # BUSCA DINÂMICA DE MODELOS
-        model_name = None
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                if 'flash' in m.name.lower():
-                    model_name = m.name
-                    break
-                    
-        if not model_name:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    model_name = m.name
-                    break
-                    
-        if not model_name:
-            return "- Erro: A sua chave de API não tem permissão para nenhum modelo de geração de texto. -"
-
-        model = genai.GenerativeModel(model_name)
-        
-        system_instruction = """
+        # 1. Definimos a instrução de sistema uma única vez
+        instructions = """
         Role & Instructions:
         Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
 
@@ -133,12 +112,43 @@ def resumir_noticia_com_gemini(texto, api_key):
         Customer Impact (Bilingual) — A final short paragraph.
         """
         
-        prompt = f"{system_instruction}\n\n--- NEWS ARTICLE TEXT ---\n{texto}"
+        # 2. Busca dinâmica do melhor modelo disponível
+        model_name = None
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                if 'flash' in m.name.lower():
+                    model_name = m.name
+                    break
         
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        if not model_name:
+            model_name = 'gemini-1.5-flash' # Fallback para o nome padrão
+
+        # 3. AJUSTE DE OTIMIZAÇÃO: Passamos a instrução como system_instruction
+        # Isso otimiza o custo e o processamento da API
+        model = genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=instructions
+        )
+        
+        # 4. Limitamos o texto de entrada para economizar tokens (Trunking)
+        # 6000 caracteres costumam cobrir o essencial estratégico de qualquer notícia
+        texto_otimizado = texto[:6000]
+        
+        tentativas = 3
+        for tentativa in range(tentativas):
+            try:
+                # Enviamos apenas a notícia, pois as regras já estão "estáticas" no modelo
+                response = model.generate_content(texto_otimizado)
+                return response.text.strip()
+            except Exception as api_error:
+                if "429" in str(api_error) or "Quota" in str(api_error):
+                    if tentativa < tentativas - 1:
+                        time.sleep(12) # Pausa para respirar a cota
+                        continue
+                return f"- Erro da API: {api_error} -"
+                    
     except Exception as e:
-        return f"- Erro da API do Gemini: {e} -"
+        return f"- Erro na configuração do Agente: {e} -"
 
 # --- 2. SESSION STATE ---
 if 'dossier_data' not in st.session_state:
@@ -164,7 +174,7 @@ with st.sidebar:
     if gemini_api_key:
         st.success("✅ Agente de IA Conectado")
     else:
-        st.error("⚠️ Falta configurar a GEMINI_API_KEY nos secrets do Streamlit!")
+        st.error("⚠️ Falta GEMINI_API_KEY nos secrets!")
     st.divider()
     
     target_launch = st.checkbox("🎯 Focar em Lançamentos/Segredos", value=False)
@@ -178,7 +188,7 @@ with st.sidebar:
 
     if st.button("🚀 1. Fetch News Links"):
         if not gemini_api_key:
-            st.error("Por favor, configure sua chave de API nos Secrets antes de rodar o agente.")
+            st.error("Configure sua chave de API nos Secrets.")
         elif len(date_range) == 2:
             st.session_state.step1_complete = False
             for key in list(st.session_state.keys()):
@@ -193,7 +203,7 @@ with st.sidebar:
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade OR \"modelo 2027\" OR \"modelo 2026\")"
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
-            with st.spinner("Agent is working: Fetching links, bypassing Google, and generating AI summaries..."):
+            with st.spinner("Agent is working: Fetching and summarizing..."):
                 for brand in brand_selection:
                     base_q = f"\"{brand}\" Brasil"
                     if target_launch:
@@ -222,11 +232,11 @@ with st.sidebar:
                                 zh_title = safe_translate(entry.title, 'zh-CN')
                                 final_title = f"{en_title} / {zh_title}"
 
-                                # AGENTE VIRTUAL: Extrai texto (bypassing Google News)
                                 conteudo_completo = extrair_texto_da_noticia(entry.link)
-                                
-                                # AGENTE VIRTUAL: Gera o resumo com Gemini Dinâmico
                                 resumo_gerado = resumir_noticia_com_gemini(conteudo_completo, gemini_api_key)
+                                
+                                # Pausa de segurança para não estourar cota gratuita
+                                time.sleep(2) 
 
                                 brand_news.append({
                                     "title": final_title, 
@@ -242,9 +252,8 @@ with st.sidebar:
 
 # --- 4. EDITING AREA ---
 if st.session_state.dossier_data:
-    
     st.header("📝 2. Curate Insights")
-    st.info("O Agente Virtual preencheu os resumos abaixo. Selecione as melhores notícias para o dossiê, revise o texto e avance.")
+    st.info("Resumos gerados automaticamente pelo Agente Virtual.")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -262,10 +271,8 @@ if st.session_state.dossier_data:
 
     for brand, items in st.session_state.dossier_data.items():
         st.subheader(f"🏎️ {brand.upper()}")
-        
         for idx, item in enumerate(items):
-            keep_checkbox = st.checkbox(f"✅ Incluir no Dossiê Final / 包含在最终档案中", value=False, key=f"keep_{brand}_{idx}")
-            
+            keep_checkbox = st.checkbox(f"✅ Incluir no Dossiê Final", value=False, key=f"keep_{brand}_{idx}")
             st.markdown(f"**Source / 来源:** [{item['title']}]({item['link']})")
             
             st.session_state.dossier_data[brand][idx]['summary'] = st.text_area(
@@ -318,12 +325,10 @@ if st.session_state.dossier_data:
         
         for brand, items in st.session_state.dossier_data.items():
             kept_items = [item for idx, item in enumerate(items) if st.session_state.get(f"keep_{brand}_{idx}", False)]
-            
             if kept_items: 
                 has_any_content = True
                 html_content += f"<div class='brand-sec'><h2>{brand}</h2>"
                 links_md = []
-                
                 for item in kept_items:
                     item_title = item.get('title', 'Link da Notícia / 新闻链接')
                     item_link = item.get('link', '#')
@@ -352,22 +357,18 @@ if st.session_state.dossier_data:
             st.session_state.filename = f"Automotive_Dossier_{d_ini_str.replace('/','')}.html"
             st.session_state.step1_complete = True
         else:
-            st.warning("No news selected. Please check the boxes of the news you want to include. / 未选择任何新闻。请勾选您要包含在档案中的新闻。")
+            st.warning("No news selected.")
             st.session_state.step1_complete = False
 
     if st.session_state.get('step1_complete', False):
-        st.success("👉 Relatório HTML gerado com sucesso! Salve-o como PDF, faça o upload na sua nuvem e cole o link público abaixo para gerar o Lark Card:")
-        
+        st.success("👉 Relatório HTML gerado!")
         st.download_button("📥 Download Final Dossier (HTML)", st.session_state.html_content, file_name=st.session_state.filename, mime="text/html")
         
         st.markdown("### 📤 4. ETAPA 2: Envio para o Lark / Feishu")
-        
-        user_report_url = st.text_input("🔗 Cole o link público do PDF hospedado na nuvem:")
+        user_report_url = st.text_input("🔗 Cole o link público do PDF:")
         
         if st.button("🚀 Confirmar Link e Enviar Lark Card"):
-            if user_report_url.strip() == "":
-                st.error("Por favor, cole um link válido antes de enviar.")
-            else:
+            if user_report_url.strip() != "":
                 top_link_element = {
                     "tag": "div",
                     "text": {
@@ -375,20 +376,15 @@ if st.session_state.dossier_data:
                         "content": f"**⭐✨ [CLICK HERE TO ACCESS THE FULL NEWS SUMMARY]({user_report_url.strip()}) ✨⭐**\n**⭐✨ [点击此处访问完整新闻摘要]({user_report_url.strip()}) ✨⭐**"
                     }
                 }
-                
                 final_feishu_elements = [top_link_element, {"tag": "hr"}] + st.session_state.feishu_elements_base
-                
                 payload = {
                     "msg_type": "interactive",
                     "card": {
-                        "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Market Intelligence Dossier / 汽车市场情报档案"}, "template": "blue"},
+                        "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Market Intelligence Dossier"}, "template": "blue"},
                         "elements": final_feishu_elements
                     }
                 }
-                
                 res = requests.post(WEBHOOK_URL, json=payload)
                 if res.status_code == 200:
-                    st.success("Dossier finalized and links synced to Feishu! / 档案已完成并同步至Feishu！")
+                    st.success("Enviado com sucesso!")
                     st.balloons()
-                else:
-                    st.error(f"Erro ao enviar para o Lark. Código: {res.status_code}")
