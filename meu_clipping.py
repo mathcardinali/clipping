@@ -8,6 +8,7 @@ from time import mktime
 from deep_translator import GoogleTranslator
 import trafilatura 
 import google.generativeai as genai # <-- IMPORT DO GEMINI
+import base64
 
 # --- 1. CORE CONFIGURATION ---
 st.set_page_config(page_title="🚗 Automotive Pulse Digest", layout="wide")
@@ -34,59 +35,47 @@ def safe_translate(text, target_lang):
     except Exception as e:
         return text
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO AVANÇADA COM BYPASS JS) ---
+# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO COM BYPASS CRIPTOGRÁFICO) ---
 def extrair_texto_da_noticia(url):
     try:
+        # BYPASS DEFINITIVO: Descriptografar o link original escondido no Base64 do Google
+        if "news.google.com/rss/articles/" in url:
+            match = re.search(r'articles/([^?]+)', url)
+            if match:
+                codigo_base64 = match.group(1)
+                codigo_base64 += "===" # Adiciona padding necessário para o Python ler
+                try:
+                    # Desfaz a criptografia
+                    texto_bruto = base64.urlsafe_b64decode(codigo_base64)
+                    # Usa Regex para encontrar o link "http" limpo dentro dos bytes desembaralhados
+                    url_match = re.search(rb'(https?://[^"\x00-\x1f\x7f]+)', texto_bruto)
+                    if url_match:
+                        url = url_match.group(1).decode('utf-8', errors='ignore')
+                except Exception:
+                    pass # Se falhar, tenta com a URL original do Google mesmo
+
+        # Agora o robô vai bater direto na porta do site de notícias real!
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://news.google.com/'
+            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
         }
         
         session = requests.Session()
-        # Injeta um cookie falso para burlar a tela de consentimento de cookies do Google
-        session.cookies.set('CONSENT', 'YES+cb.20220419-08-p0.cs+FX+433', domain='.google.com')
-        
         resposta = session.get(url, headers=headers, timeout=15, allow_redirects=True)
         
-        # BYPASS DO GOOGLE NEWS: Encontrar o link real escondido no código-fonte
-        if "news.google.com" in resposta.url or "consent.google.com" in resposta.url:
-            # O Google esconde a URL de destino dentro do HTML. Vamos pescar qualquer link externo.
-            urls_encontradas = re.findall(r'(?:href=["\']|URL=\'?)(https?://[^"\'<>]+)', resposta.text, re.IGNORECASE)
-            
-            url_real = None
-            for u in urls_encontradas:
-                # Descartamos links internos do Google para focar apenas no site da notícia real
-                if not any(dominio in u for dominio in ["google.com", "schema.org", "w3.org", "gstatic.com"]):
-                    url_real = u
-                    break
-            
-            # Se achamos o site real, fazemos a viagem pra lá
-            if url_real:
-                # Limpa redirecionadores extras do google (ex: google.com/url?q=...)
-                if "url?q=" in url_real:
-                    parsed = urllib.parse.urlparse(url_real)
-                    qs = urllib.parse.parse_qs(parsed.query)
-                    if 'q' in qs:
-                        url_real = qs['q'][0]
-                        
-                resposta = session.get(url_real, headers=headers, timeout=15, allow_redirects=True)
-
-        # Verifica se o site da notícia deixou a gente entrar
         if resposta.status_code == 200:
             texto = trafilatura.extract(resposta.text)
             if texto and len(texto) > 150:
                 return texto
             else:
-                return f"Erro: O robô chegou no site, mas não achou texto suficiente. URL Final: {resposta.url}"
+                return f"Erro: Acesso liberado ao site ({url}), mas o extrator não achou texto relevante."
         else:
-            return f"Erro: O site bloqueou o acesso. Código HTTP: {resposta.status_code} - URL Final: {resposta.url}"
+            return f"Erro: Bloqueio no site final. Código HTTP: {resposta.status_code} - URL: {url}"
             
     except requests.exceptions.Timeout:
-        return "Erro: O site demorou muito para responder."
+        return "Erro: O site final demorou muito para responder."
     except Exception as e:
-        return f"Erro na conexão: {e}"
+        return f"Erro na conexão com o site final: {e}"
 # -----------------------------------------------------------------------------
 
 # --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
