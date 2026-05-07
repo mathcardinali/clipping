@@ -5,3 +5,4 @@ deep-translator
 trafilatura
 google-generativeai
 googlenewsdecoder
+xhtml2pdf
