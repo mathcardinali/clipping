@@ -6,6 +6,7 @@ import re # Importação de Regex para tratamento de links
 from datetime import datetime, timedelta, time as dt_time
 from time import mktime
 from deep_translator import GoogleTranslator
+import trafilatura # <-- IMPORT ADICIONADO PARA O AGENTE VIRTUAL
 
 # --- 1. CORE CONFIGURATION ---
 st.set_page_config(page_title="🚗 Automotive Pulse Digest", layout="wide")
@@ -41,6 +42,20 @@ def safe_translate(text, target_lang):
     except Exception as e:
         # Fallback: retorna o texto original em caso de qualquer falha de API ou parsing
         return text
+# -----------------------------------------------------------------------------
+
+# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO DE TEXTO) ---
+def extrair_texto_da_noticia(url):
+    """Acessa o link e extrai apenas o corpo da notícia."""
+    try:
+        html_baixado = trafilatura.fetch_url(url)
+        if html_baixado:
+            # extract() limpa os menus e propagandas
+            texto = trafilatura.extract(html_baixado)
+            return texto if texto else "Erro: Conteúdo não encontrado no HTML."
+        return "Erro: Falha ao acessar a página (possível bloqueio/paywall)."
+    except Exception as e:
+        return f"Erro na extração: {e}"
 # -----------------------------------------------------------------------------
 
 # --- 2. SESSION STATE ---
@@ -92,7 +107,7 @@ with st.sidebar:
             # Filtro de Grandes Mídias
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
-            with st.spinner("Fetching headlines, filtering dates, and translating..."):
+            with st.spinner("Fetching headlines, filtering dates, translating, and reading content..."):
                 for brand in brand_selection:
                     base_q = f"\"{brand}\" Brasil"
                     if target_launch:
@@ -130,9 +145,13 @@ with st.sidebar:
                                 zh_title = safe_translate(entry.title, 'zh-CN')
                                 final_title = f"{en_title} / {zh_title}"
 
+                                # --- AÇÃO DO AGENTE: Extraindo o texto completo da notícia ---
+                                conteudo_completo = extrair_texto_da_noticia(entry.link)
+
                                 brand_news.append({
                                     "title": final_title, 
                                     "link": entry.link, 
+                                    "full_text": conteudo_completo, # <-- TEXTO ARMAZENADO AQUI
                                     "summary": "- Insert Comments Here -"
                                 })
                                 
