@@ -2,11 +2,12 @@ import streamlit as st
 import feedparser
 import requests
 import urllib.parse
-import re # Importação de Regex para tratamento de links
+import re 
 from datetime import datetime, timedelta, time as dt_time
 from time import mktime
 from deep_translator import GoogleTranslator
-import trafilatura # <-- IMPORT ADICIONADO PARA O AGENTE VIRTUAL
+import trafilatura 
+import google.generativeai as genai # <-- IMPORT DO GEMINI
 
 # --- 1. CORE CONFIGURATION ---
 st.set_page_config(page_title="🚗 Automotive Pulse Digest", layout="wide")
@@ -16,56 +17,78 @@ st.markdown("🚗 Automotive Pulse Digest")
 # Feishu Webhook
 WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/8f561d21-2a4c-4726-bff3-c0bf5d9c35a5"
 
-# --- MODIFICAÇÃO: Variável REPORT_URL removida do escopo global ---
-# O link agora será inserido dinamicamente pelo usuário na ETAPA 2.
-# ------------------------------------------------------------------
-
-# --- Função segura de tradução (Ignora links e trata erros) ---
+# --- Função segura de tradução ---
 def safe_translate(text, target_lang):
     try:
-        # Encontra todos os links brutos no texto (começando com http ou https)
         urls = re.findall(r'(https?://[^\s]+)', text)
-        
-        # Substitui os links por placeholders temporários para proteger na tradução
         temp_text = text
         for i, url in enumerate(urls):
             temp_text = temp_text.replace(url, f"[[URL_{i}]]")
         
-        # Realiza a tradução do texto limpo
         translated_text = GoogleTranslator(source='auto', target=target_lang).translate(temp_text)
         
-        # Restaura os links originais no texto traduzido
         for i, url in enumerate(urls):
             translated_text = translated_text.replace(f"[[URL_{i}]]", url)
             
         return translated_text
     except Exception as e:
-        # Fallback: retorna o texto original em caso de qualquer falha de API ou parsing
         return text
-# -----------------------------------------------------------------------------
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO DE TEXTO) ---
+# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO) ---
 def extrair_texto_da_noticia(url):
-    """Acessa o link e extrai apenas o corpo da notícia."""
     try:
         html_baixado = trafilatura.fetch_url(url)
         if html_baixado:
-            # extract() limpa os menus e propagandas
             texto = trafilatura.extract(html_baixado)
             return texto if texto else "Erro: Conteúdo não encontrado no HTML."
-        return "Erro: Falha ao acessar a página (possível bloqueio/paywall)."
+        return "Erro: Falha ao acessar a página."
     except Exception as e:
         return f"Erro na extração: {e}"
-# -----------------------------------------------------------------------------
+
+# --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
+def resumir_noticia_com_gemini(texto, api_key):
+    if not api_key:
+        return "- Erro: Chave de API não encontrada nos Secrets. -"
+    
+    if "Erro:" in texto:
+        return "- Não foi possível extrair texto legível para resumir. O site pode ter bloqueado o acesso. -"
+        
+    try:
+        genai.configure(api_key=api_key)
+        # O modelo flash é a melhor opção para curadoria rápida de textos
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        system_instruction = """
+        Role & Instructions:
+        Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
+
+        Rules for Output:
+        Language: Always respond in both English and Chinese (English text followed immediately by its Chinese translation).
+        Formatting: Never use bold text (no asterisks). Use plain text only to ensure easy copy-pasting.
+        Length: Keep the total response under 1000 characters (including both languages).
+        Structure:
+        Technical/Performance (Bilingual) — Include this section ONLY if the news is directly related to vehicle launches, physical products, or technical specifications. Otherwise, omit it entirely.
+        Market & Strategic Insight (Bilingual) — A single combined section.
+        Customer Impact (Bilingual) — A final short paragraph.
+        """
+        
+        prompt = f"{system_instruction}\n\n--- NEWS ARTICLE TEXT ---\n{texto}"
+        
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        return f"- Erro ao gerar resumo com a IA: {e} -"
 
 # --- 2. SESSION STATE ---
 if 'dossier_data' not in st.session_state:
     st.session_state.dossier_data = {}
 
-# --- MODIFICAÇÃO: Estado para controlar a "Pausa" entre a Etapa 1 e Etapa 2 ---
 if 'step1_complete' not in st.session_state:
     st.session_state.step1_complete = False
-# ------------------------------------------------------------------------------
+
+# --- CAPTURA DA CHAVE DE API VIA SECRETS ---
+# Tenta buscar a chave. Se não achar, retorna string vazia.
+gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 
 # --- 3. SIDEBAR ---
 brands_by_origin = {
@@ -78,7 +101,13 @@ brands_by_origin = {
 with st.sidebar:
     st.header("⚙️ Market Parameters")
     
-    # --- CORREÇÃO AQUI: Mudado para value=False ---
+    # Validação visual da API Key
+    if gemini_api_key:
+        st.success("✅ Agente de IA Conectado (API Key Segura)")
+    else:
+        st.error("⚠️ Falta configurar a GEMINI_API_KEY nos secrets do Streamlit!")
+    st.divider()
+    
     target_launch = st.checkbox("🎯 Focar em Lançamentos/Segredos", value=False)
     
     origins = st.multiselect("Origins:", list(brands_by_origin.keys()), default=["China"])
@@ -89,35 +118,29 @@ with st.sidebar:
     date_range = st.date_input("Period:", value=(today - timedelta(days=7), today))
 
     if st.button("🚀 1. Fetch News Links"):
-        if len(date_range) == 2:
-            # Limpa os estados de seleção e redefine a etapa 1 ao iniciar nova busca
+        if not gemini_api_key:
+            st.error("Por favor, configure sua chave de API nos Secrets antes de rodar o agente.")
+        elif len(date_range) == 2:
             st.session_state.step1_complete = False
             for key in list(st.session_state.keys()):
                 if key.startswith("keep_"):
                     del st.session_state[key]
 
             d_ini, d_end = date_range
-            
-            # Criação dos limites exatos de data (00:00:00 até 23:59:59)
             start_datetime = datetime.combine(d_ini, dt_time.min)
             end_datetime = datetime.combine(d_end, dt_time.max)
             
             results = {}
-            
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade OR \"modelo 2027\" OR \"modelo 2026\")"
-            # Filtro de Grandes Mídias
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
-            with st.spinner("Fetching headlines, filtering dates, translating, and reading content..."):
+            with st.spinner("Agent is working: Fetching links, extracting full text, and generating AI summaries..."):
                 for brand in brand_selection:
                     base_q = f"\"{brand}\" Brasil"
                     if target_launch:
                         base_q += launch_keywords
                     
-                    # Aplicando o filtro de mídia à query base
                     base_q += media_filter
-                    
-                    # O Google News ainda recebe o filtro para reduzir o volume inicial
                     full_q = f"{base_q} after:{d_ini.strftime('%Y-%m-%d')} before:{d_end.strftime('%Y-%m-%d')}"
                     
                     safe_q = urllib.parse.quote_plus(full_q)
@@ -128,35 +151,32 @@ with st.sidebar:
                         safe_brand_name = brand.lower()
                         
                         for entry in feed.entries:
-                            # STRICT FILTER: The brand must actually be in the headline to avoid Google News "spiraling"
                             if safe_brand_name in entry.title.lower():
-                                
-                                # Validação Rigorosa de Datas no Python
                                 if hasattr(entry, 'published_parsed') and entry.published_parsed:
                                     pub_date = datetime.fromtimestamp(mktime(entry.published_parsed))
-                                    # Descarte da notícia se estiver fora do intervalo estrito
                                     if not (start_datetime <= pub_date <= end_datetime):
                                         continue
                                 else:
-                                    # Ignorar se a notícia não trouxer a data por alguma falha do RSS
                                     continue
                                 
-                                # Uso da nova função segura de tradução
                                 en_title = safe_translate(entry.title, 'en')
                                 zh_title = safe_translate(entry.title, 'zh-CN')
                                 final_title = f"{en_title} / {zh_title}"
 
-                                # --- AÇÃO DO AGENTE: Extraindo o texto completo da notícia ---
+                                # AGENTE VIRTUAL: Extrai o texto da matéria
                                 conteudo_completo = extrair_texto_da_noticia(entry.link)
+                                
+                                # AGENTE VIRTUAL: Gera o resumo com o Gemini
+                                resumo_gerado = resumir_noticia_com_gemini(conteudo_completo, gemini_api_key)
 
                                 brand_news.append({
                                     "title": final_title, 
                                     "link": entry.link, 
-                                    "full_text": conteudo_completo, # <-- TEXTO ARMAZENADO AQUI
-                                    "summary": "- Insert Comments Here -"
+                                    "full_text": conteudo_completo, 
+                                    "summary": resumo_gerado 
                                 })
                                 
-                        if brand_news: # Only add the brand if we found actual relevant news
+                        if brand_news: 
                             results[brand] = brand_news
                             
             st.session_state.dossier_data = results
@@ -165,9 +185,8 @@ with st.sidebar:
 if st.session_state.dossier_data:
     
     st.header("📝 2. Curate Insights")
-    st.info("Selecione as notícias que servirão para o dossiê e cole suas análises nas caixas de texto.")
+    st.info("O Agente Virtual preencheu os resumos abaixo. Selecione as melhores notícias para o dossiê, revise o texto e avance.")
     
-    # Botões: Selecionar/Desmarcar Tudo
     col1, col2 = st.columns(2)
     with col1:
         if st.button("✅ Select All / 全选"):
@@ -186,29 +205,26 @@ if st.session_state.dossier_data:
         st.subheader(f"🏎️ {brand.upper()}")
         
         for idx, item in enumerate(items):
-            # Checkbox para permitir ao usuário vetar/incluir a notícia (Padrão: False/Desmarcado)
             keep_checkbox = st.checkbox(f"✅ Incluir no Dossiê Final / 包含在最终档案中", value=False, key=f"keep_{brand}_{idx}")
             
             st.markdown(f"**Source / 来源:** [{item['title']}]({item['link']})")
             
-            # Text area remains the same, but we save its output to session state dynamically
+            # Text area agora vem populado com o resumo bilíngue do Gemini
             st.session_state.dossier_data[brand][idx]['summary'] = st.text_area(
                 label=f"Edit Notes: {brand} - {idx}",
                 value=item['summary'],
-                height=150, 
+                height=250, 
                 key=f"edit_{brand}_{idx}",
                 label_visibility="collapsed"
             )
 
-    # --- 5. FINALIZATION & EXPORT (NOVO FLUXO EM 2 ETAPAS) ---
+    # --- 5. FINALIZATION & EXPORT ---
     st.divider()
     
-    # --- MODIFICAÇÃO: ETAPA 1 - Apenas gera o HTML ---
     if st.button("📄 3. ETAPA 1: Gerar Relatório HTML"):
         d_ini_str = date_range[0].strftime('%m/%d')
         d_end_str = date_range[1].strftime('%m/%d')
         
-        # Cabeçalhos Bilíngues
         html_content = f"""
         <html>
         <head>
@@ -232,7 +248,6 @@ if st.session_state.dossier_data:
             </div>
         """
         
-        # Payload base do Feishu Bilíngue (sem o link do topo ainda)
         feishu_elements_base = [
             {
                 "tag": "div",
@@ -274,7 +289,6 @@ if st.session_state.dossier_data:
         html_content += "</body></html>"
         
         if has_any_content:
-            # Salva os dados gerados na sessão para usar na Etapa 2
             st.session_state.html_content = html_content
             st.session_state.feishu_elements_base = feishu_elements_base
             st.session_state.filename = f"Automotive_Dossier_{d_ini_str.replace('/','')}.html"
@@ -283,24 +297,19 @@ if st.session_state.dossier_data:
             st.warning("No news selected. Please check the boxes of the news you want to include. / 未选择任何新闻。请勾选您要包含在档案中的新闻。")
             st.session_state.step1_complete = False
 
-    # --- MODIFICAÇÃO: ETAPA 2 - Input manual do link e envio para o Lark ---
     if st.session_state.get('step1_complete', False):
         st.success("👉 Relatório HTML gerado com sucesso! Salve-o como PDF, faça o upload na sua nuvem e cole o link público abaixo para gerar o Lark Card:")
         
-        # O botão de download fica disponível na tela
         st.download_button("📥 Download Final Dossier (HTML)", st.session_state.html_content, file_name=st.session_state.filename, mime="text/html")
         
         st.markdown("### 📤 4. ETAPA 2: Envio para o Lark / Feishu")
         
-        # Captura o input do usuário
         user_report_url = st.text_input("🔗 Cole o link público do PDF hospedado na nuvem:")
         
         if st.button("🚀 Confirmar Link e Enviar Lark Card"):
             if user_report_url.strip() == "":
                 st.error("Por favor, cole um link válido antes de enviar.")
             else:
-                # --- MODIFICAÇÃO: Design do cabeçalho Lark Card ---
-                # O link de acesso ganha total destaque no TOPO da mensagem.
                 top_link_element = {
                     "tag": "div",
                     "text": {
@@ -309,7 +318,6 @@ if st.session_state.dossier_data:
                     }
                 }
                 
-                # O elemento de topo é adicionado ANTES da lista base gerada na Etapa 1
                 final_feishu_elements = [top_link_element, {"tag": "hr"}] + st.session_state.feishu_elements_base
                 
                 payload = {
