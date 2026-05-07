@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, time as dt_time
 from time import mktime
 from deep_translator import GoogleTranslator
 import trafilatura 
-import google.generativeai as genai # <-- IMPORT DO GEMINI
+import google.generativeai as genai
 import base64
 
 # --- 1. CORE CONFIGURATION ---
@@ -35,6 +35,53 @@ def safe_translate(text, target_lang):
     except Exception as e:
         return text
 
+# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO COM API BATCHEXECUTE DO GOOGLE) ---
+def extrair_texto_da_noticia(url):
+    try:
+        # 1. BYPASS DEFINITIVO: Resolve a URL real usando a API interna do Google
+        if "news.google.com/rss/articles/" in url:
+            match = re.search(r'articles/([^?]+)', url)
+            if match:
+                article_id = match.group(1)
+                req_payload = f'[[["Fbv4je","[\\"garturlreq\\",[[\\"en-US\\",\\"US\\",[\\"FINANCE_TOP_INDICES\\",\\"WEB_TEST_1_0_0\\"],null,null,1,1,\\"US:en\\",null,180,null,null,null,null,null,0,null,null,[1608992183,723341000]],\\"en-US\\",\\"US\\",1,[2,3,4,8],1,0,\\"655000234\\",0,0,null,0],\\"{article_id}\\"]",null,"generic"]]]'
+                
+                try:
+                    res_google = requests.post(
+                        "https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je",
+                        headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
+                        data={"f.req": req_payload},
+                        timeout=10
+                    )
+                    url_real_match = re.search(r'(https?://[a-zA-Z0-9-._~:/?#\[\]@!$&\'()*+,;=%]+)', res_google.text)
+                    if url_real_match:
+                        url = url_real_match.group(1)
+                except Exception:
+                    pass
+
+        # 2. Bate na porta do site de notícias real
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
+        }
+        
+        session = requests.Session()
+        resposta = session.get(url, headers=headers, timeout=15, allow_redirects=True)
+        dominio_real = urllib.parse.urlparse(url).netloc.replace("www.", "")
+        
+        if resposta.status_code == 200:
+            texto = trafilatura.extract(resposta.text)
+            if texto and len(texto) > 150:
+                return texto
+            else:
+                return f"- Acesso liberado ao site ({dominio_real}), mas a Inteligência Artificial não achou um texto estruturado para ler (Pode ser uma página de Fotos, Vídeo ou Paywall). -"
+        else:
+            return f"- O site ({dominio_real}) possui bloqueio contra robôs (Erro {resposta.status_code}). -"
+            
+    except requests.exceptions.Timeout:
+        return "- O site final demorou muito para responder e derrubou a conexão do Agente. -"
+    except Exception as e:
+        return f"- Erro fatal na conexão com o site: {e} -"
+
 # --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI INTELIGENTE) ---
 def resumir_noticia_com_gemini(texto, api_key):
     if not api_key:
@@ -46,17 +93,14 @@ def resumir_noticia_com_gemini(texto, api_key):
     try:
         genai.configure(api_key=api_key)
         
-        # BUSCA DINÂMICA DE MODELOS: Varre a API e pega o nome do modelo correto ativo hoje
+        # BUSCA DINÂMICA DE MODELOS
         model_name = None
-        
-        # 1. Tenta encontrar a versão mais atual do Flash (rápida e barata)
         for m in genai.list_models():
             if 'generateContent' in m.supported_generation_methods:
                 if 'flash' in m.name.lower():
                     model_name = m.name
                     break
-        
-        # 2. Se não achar o Flash, pega literalmente qualquer modelo de texto liberado na sua chave
+                    
         if not model_name:
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
@@ -66,43 +110,8 @@ def resumir_noticia_com_gemini(texto, api_key):
         if not model_name:
             return "- Erro: A sua chave de API não tem permissão para nenhum modelo de geração de texto. -"
 
-        # Instancia o modelo encontrado automaticamente (ex: 'models/gemini-1.5-flash-latest')
         model = genai.GenerativeModel(model_name)
         
-        system_instruction = """
-        Role & Instructions:
-        Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
-
-        Rules for Output:
-        Language: Always respond in both English and Chinese (English text followed immediately by its Chinese translation).
-        Formatting: Never use bold text (no asterisks). Use plain text only to ensure easy copy-pasting.
-        Length: Keep the total response under 1000 characters (including both languages).
-        Structure:
-        Technical/Performance (Bilingual) — Include this section ONLY if the news is directly related to vehicle launches, physical products, or technical specifications. Otherwise, omit it entirely.
-        Market & Strategic Insight (Bilingual) — A single combined section.
-        Customer Impact (Bilingual) — A final short paragraph.
-        """
-        
-        prompt = f"{system_instruction}\n\n--- NEWS ARTICLE TEXT ---\n{texto}"
-        
-        response = model.generate_content(prompt)
-        return response.text.strip()
-    except Exception as e:
-        return f"- Erro da API do Gemini: {e} -"
-# -----------------------------------------------------------------------------
-
-# --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
-def resumir_noticia_com_gemini(texto, api_key):
-    if not api_key:
-        return "- Erro: Chave de API não encontrada nos Secrets. -"
-    
-    # Agora ele vai imprimir o erro real do nosso rastreador!
-    if "Erro:" in texto:
-        return f"- Falha Técnica: {texto} -"
-        
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-pro')        
         system_instruction = """
         Role & Instructions:
         Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
@@ -132,7 +141,6 @@ if 'step1_complete' not in st.session_state:
     st.session_state.step1_complete = False
 
 # --- CAPTURA DA CHAVE DE API VIA SECRETS ---
-# Tenta buscar a chave. Se não achar, retorna string vazia.
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 
 # --- 3. SIDEBAR ---
@@ -146,7 +154,6 @@ brands_by_origin = {
 with st.sidebar:
     st.header("⚙️ Market Parameters")
     
-    # Validação visual da API Key
     if gemini_api_key:
         st.success("✅ Agente de IA Conectado (API Key Segura)")
     else:
@@ -179,7 +186,7 @@ with st.sidebar:
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade OR \"modelo 2027\" OR \"modelo 2026\")"
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
-            with st.spinner("Agent is working: Fetching links, extracting full text, and generating AI summaries..."):
+            with st.spinner("Agent is working: Fetching links, bypassing Google, and generating AI summaries..."):
                 for brand in brand_selection:
                     base_q = f"\"{brand}\" Brasil"
                     if target_launch:
@@ -208,10 +215,10 @@ with st.sidebar:
                                 zh_title = safe_translate(entry.title, 'zh-CN')
                                 final_title = f"{en_title} / {zh_title}"
 
-                                # AGENTE VIRTUAL: Extrai o texto da matéria
+                                # AGENTE VIRTUAL: Extrai texto (bypassing Google News)
                                 conteudo_completo = extrair_texto_da_noticia(entry.link)
                                 
-                                # AGENTE VIRTUAL: Gera o resumo com o Gemini
+                                # AGENTE VIRTUAL: Gera o resumo com Gemini Dinâmico
                                 resumo_gerado = resumir_noticia_com_gemini(conteudo_completo, gemini_api_key)
 
                                 brand_news.append({
@@ -254,7 +261,6 @@ if st.session_state.dossier_data:
             
             st.markdown(f"**Source / 来源:** [{item['title']}]({item['link']})")
             
-            # Text area agora vem populado com o resumo bilíngue do Gemini
             st.session_state.dossier_data[brand][idx]['summary'] = st.text_area(
                 label=f"Edit Notes: {brand} - {idx}",
                 value=item['summary'],
