@@ -68,19 +68,18 @@ def resumir_noticia_com_gemini(texto, api_key):
     try:
         genai.configure(api_key=api_key)
         
-        # BUSCA DINÂMICA DE MODELOS (Resolve Erro 404)
         model_name = None
         try:
-            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            for m in available_models:
+            available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            for m in available:
                 if 'flash' in m.lower():
                     model_name = m
                     break
-            if not model_name: model_name = available_models[0]
+            if not model_name: model_name = available[0]
         except:
             model_name = 'models/gemini-1.5-flash'
 
-        # --- AS SUAS INSTRUÇÕES ORIGINAIS (CX ANALYST) ---
+        # --- AS SUAS INSTRUÇÕES ORIGINAIS RESTAURADAS ---
         system_instruction = """
         Role & Instructions:
         Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
@@ -109,29 +108,30 @@ def resumir_noticia_com_gemini(texto, api_key):
     except Exception as e:
         return f"- Erro Configuração: {e} -"
 
-# --- FUNÇÃO DE GERAÇÃO DE PDF COM CHINÊS (UTF-8) ---
+# --- FUNÇÃO DE GERAÇÃO DE PDF CORRIGIDA (DIAGRAMAÇÃO E CHINÊS) ---
 def gerar_pdf_bytes(dossier_data, session_state):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    # REGISTRO DA FONTE UNICODE (CHINÊS)
-    # Certifique-se de que o arquivo fireflysung.ttf está no mesmo diretório
-    try:
-        pdf.add_font('Firefly', '', 'fireflysung.ttf')
+    # Verificação da Fonte fireflysung.ttf
+    font_path = "fireflysung.ttf"
+    if os.path.exists(font_path):
+        pdf.add_font('Firefly', '', font_path)
         font_main = 'Firefly'
-    except:
-        # Fallback caso o arquivo não seja encontrado
+    else:
+        # Se não achar a fonte, avisa o usuário no Streamlit
+        st.sidebar.warning("⚠️ Arquivo 'fireflysung.ttf' não encontrado. O chinês será omitido no PDF.")
         font_main = 'Helvetica'
 
     largura_util = pdf.epw 
 
-    # Cabeçalho Principal
-    pdf.set_font(font_main, '', 20)
-    pdf.set_text_color(26, 35, 126) # Azul Marinho
+    # Título Principal
+    pdf.set_font(font_main, 'B' if font_main == 'Helvetica' else '', 20)
+    pdf.set_text_color(26, 35, 126)
     pdf.cell(largura_util, 15, "Automotive Pulse Digest", ln=True, align="C")
     
-    # Subtítulo com Data e Pesquisador
+    # Subtítulo
     pdf.set_font(font_main, '', 10)
     pdf.set_text_color(100, 100, 100)
     pdf.cell(largura_util, 6, f"Researcher: Matheus Cardinali | Date: {datetime.now().strftime('%d/%m/%Y')}", ln=True, align="C")
@@ -141,29 +141,45 @@ def gerar_pdf_bytes(dossier_data, session_state):
         kept_items = [it for idx, it in enumerate(items) if session_state.get(f"keep_{brand}_{idx}")]
         
         if kept_items:
-            # Faixa da Marca
-            pdf.set_font(font_main, '', 14)
+            # Faixa da Marca (Cinza)
+            pdf.set_font(font_main, 'B' if font_main == 'Helvetica' else '', 14)
             pdf.set_fill_color(240, 242, 246)
             pdf.set_text_color(0, 0, 0)
             pdf.cell(largura_util, 10, f"  BRAND: {brand.upper()}", ln=True, fill=True)
-            pdf.ln(2)
+            pdf.ln(4)
 
             for it in kept_items:
-                # Título da Notícia (Azul)
-                pdf.set_font(font_main, '', 11)
-                pdf.set_text_color(0, 86, 179)
-                pdf.multi_cell(largura_util, 7, txt=it['title'])
+                # GARANTIR QUE O TEXTO COMEÇA NA MARGEM ESQUERDA
+                pdf.set_x(pdf.l_margin)
                 
-                # Resumo Estratégico (Corpo do texto)
+                # Título da Notícia (Azul)
+                pdf.set_font(font_main, 'B' if font_main == 'Helvetica' else '', 11)
+                pdf.set_text_color(0, 86, 179)
+                
+                txt_title = it['title']
+                if font_main == 'Helvetica': # Se for fallback, limpa chinês para não crashar
+                    txt_title = txt_title.encode('latin-1', 'ignore').decode('latin-1')
+                
+                pdf.multi_cell(largura_util, 7, txt=txt_title, align='L')
+                
+                pdf.ln(1)
+                pdf.set_x(pdf.l_margin) # Reset X novamente
+
+                # Resumo Estratégico (Preto)
                 pdf.set_font(font_main, '', 10)
                 pdf.set_text_color(33, 33, 33)
-                pdf.multi_cell(largura_util, 6, txt=it['summary'])
                 
-                # Linha separadora suave entre notícias
-                pdf.ln(4)
+                txt_summary = it['summary']
+                if font_main == 'Helvetica':
+                    txt_summary = txt_summary.encode('latin-1', 'ignore').decode('latin-1')
+                
+                pdf.multi_cell(largura_util, 6, txt=txt_summary, align='L')
+                
+                # Divisória
+                pdf.ln(6)
                 pdf.set_draw_color(220, 220, 220)
-                pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + largura_util, pdf.get_y())
-                pdf.ln(4)
+                pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + largura_util, pdf.get_y())
+                pdf.ln(6)
     
     return pdf.output()
 
@@ -182,8 +198,8 @@ brands_by_origin = {
 
 with st.sidebar:
     st.header("⚙️ Parameters")
-    if gemini_api_key: st.success("✅ Agente Conectado")
-    else: st.error("⚠️ Configure a GEMINI_API_KEY")
+    if gemini_api_key: st.success("✅ IA Conectada")
+    else: st.error("⚠️ Sem API KEY!")
     st.divider()
     target_launch = st.checkbox("🎯 Focar em Lançamentos", value=False)
     origins = st.multiselect("Origins:", list(brands_by_origin.keys()), default=["China"])
@@ -249,13 +265,13 @@ if st.session_state.dossier_data:
         count = sum(1 for brand, items in st.session_state.dossier_data.items() for idx in range(len(items)) if st.session_state.get(f"keep_{brand}_{idx}"))
         
         if count == 0:
-            st.error("Por favor, selecione ao menos uma notícia antes de gerar o PDF.")
+            st.error("Selecione ao menos uma notícia!")
         else:
             try:
                 pdf_output = gerar_pdf_bytes(st.session_state.dossier_data, st.session_state)
                 st.session_state.pdf_output = bytes(pdf_output)
                 st.session_state.step1_complete = True
-                st.success(f"✅ PDF gerado com {count} notícias! Use o botão abaixo.")
+                st.success(f"✅ PDF gerado com {count} notícias!")
             except Exception as e:
                 st.error(f"Erro ao diagramar o PDF: {e}")
 
@@ -281,4 +297,3 @@ if st.session_state.dossier_data:
                 }
                 requests.post(WEBHOOK_URL, json=payload)
                 st.success("Enviado com sucesso!")
-                st.balloons()
