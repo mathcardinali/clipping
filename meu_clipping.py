@@ -34,31 +34,45 @@ def safe_translate(text, target_lang):
     except Exception as e:
         return text
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO AVANÇADA) ---
+# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO AVANÇADA COM BYPASS) ---
 def extrair_texto_da_noticia(url):
     try:
-        # Criando o nosso "disfarce" de navegador real
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
             'Referer': 'https://news.google.com/'
         }
         
-        # O requests tenta entrar no site com o disfarce (espera no máximo 15 segundos)
-        resposta = requests.get(url, headers=headers, timeout=15)
+        # A Sessão ajuda a reter cookies, o que diminui bloqueios
+        session = requests.Session()
+        resposta = session.get(url, headers=headers, timeout=15, allow_redirects=True)
         
-        # Se o site deixou a gente entrar (Status 200 = OK)
+        # BYPASS DO GOOGLE NEWS: Se parou em uma tela do Google, procura o link real
+        if "news.google.com" in resposta.url or "consent.google.com" in resposta.url:
+            # Procura a tag <meta http-equiv="refresh" content="0; url=... ">
+            match = re.search(r'URL=["\']?(https?://[^"\'>]+)["\']?', resposta.text, re.IGNORECASE)
+            if match:
+                url_real = match.group(1)
+                # Faz um novo acesso, agora direto no site da notícia
+                resposta = session.get(url_real, headers=headers, timeout=15)
+        
+        # Verifica se o site da notícia deixou a gente entrar
         if resposta.status_code == 200:
-            # Passamos o HTML sujo para o trafilatura limpar e pegar só a notícia
             texto = trafilatura.extract(resposta.text)
-            return texto if texto else "Erro: Conteúdo não encontrado no HTML."
+            
+            # Valida se o texto extraído tem um tamanho aceitável
+            if texto and len(texto) > 150:
+                return texto
+            else:
+                return f"Erro: O robô acessou a página, mas não achou o texto. URL Final: {resposta.url}"
         else:
-            return f"Erro: O site bloqueou o robô. Código HTTP: {resposta.status_code}"
+            return f"Erro: O site bloqueou o acesso. Código HTTP: {resposta.status_code} - URL Final: {resposta.url}"
             
     except requests.exceptions.Timeout:
         return "Erro: O site demorou muito para responder."
     except Exception as e:
-        return f"Erro na extração: {e}"
+        return f"Erro na conexão: {e}"
 # -----------------------------------------------------------------------------
 
 # --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
