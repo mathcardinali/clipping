@@ -6,6 +6,7 @@ import re
 import json
 import html
 import time
+import os
 from datetime import datetime, timedelta, time as dt_time
 from time import mktime
 from deep_translator import GoogleTranslator
@@ -67,23 +68,19 @@ def resumir_noticia_com_gemini(texto, api_key):
     try:
         genai.configure(api_key=api_key)
         
-        # BUSCA DINÂMICA: Resolve erro 404 selecionando o modelo correto na conta
+        # BUSCA DINÂMICA DE MODELOS (Resolve Erro 404)
         model_name = None
         try:
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    if 'flash' in m.name.lower():
-                        model_name = m.name
-                        break
-            if not model_name:
-                for m in genai.list_models():
-                    if 'generateContent' in m.supported_generation_methods:
-                        model_name = m.name
-                        break
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            for m in available_models:
+                if 'flash' in m.lower():
+                    model_name = m
+                    break
+            if not model_name: model_name = available_models[0]
         except:
             model_name = 'models/gemini-1.5-flash'
 
-        # CONFIGURAÇÃO DE ANÁLISE RESTAURADA (CX ANALYST)
+        # --- AS SUAS INSTRUÇÕES ORIGINAIS (CX ANALYST) ---
         system_instruction = """
         Role & Instructions:
         Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
@@ -100,7 +97,6 @@ def resumir_noticia_com_gemini(texto, api_key):
         
         model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
         
-        # Retry loop para erros de quota (429)
         for _ in range(3):
             try:
                 response = model.generate_content(texto[:6000])
@@ -113,35 +109,61 @@ def resumir_noticia_com_gemini(texto, api_key):
     except Exception as e:
         return f"- Erro Configuração: {e} -"
 
+# --- FUNÇÃO DE GERAÇÃO DE PDF COM CHINÊS (UTF-8) ---
 def gerar_pdf_bytes(dossier_data, session_state):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
     
-    largura_util = pdf.epw # Resolve o erro "Not enough horizontal space"
+    # REGISTRO DA FONTE UNICODE (CHINÊS)
+    # Certifique-se de que o arquivo fireflysung.ttf está no mesmo diretório
+    try:
+        pdf.add_font('Firefly', '', 'fireflysung.ttf')
+        font_main = 'Firefly'
+    except:
+        # Fallback caso o arquivo não seja encontrado
+        font_main = 'Helvetica'
 
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(largura_util, 10, "Automotive Market Intelligence Dossier", ln=True, align="C")
-    pdf.set_font("Helvetica", "I", 10)
-    pdf.cell(largura_util, 10, f"Researcher: Matheus Cardinali | Date: {datetime.now().strftime('%d/%m/%Y')}", ln=True, align="C")
-    pdf.ln(10)
+    largura_util = pdf.epw 
+
+    # Cabeçalho Principal
+    pdf.set_font(font_main, '', 20)
+    pdf.set_text_color(26, 35, 126) # Azul Marinho
+    pdf.cell(largura_util, 15, "Automotive Pulse Digest", ln=True, align="C")
+    
+    # Subtítulo com Data e Pesquisador
+    pdf.set_font(font_main, '', 10)
+    pdf.set_text_color(100, 100, 100)
+    pdf.cell(largura_util, 6, f"Researcher: Matheus Cardinali | Date: {datetime.now().strftime('%d/%m/%Y')}", ln=True, align="C")
+    pdf.ln(8)
 
     for brand, items in dossier_data.items():
         kept_items = [it for idx, it in enumerate(items) if session_state.get(f"keep_{brand}_{idx}")]
+        
         if kept_items:
-            pdf.set_font("Helvetica", "B", 14)
-            pdf.set_fill_color(230, 230, 230)
-            pdf.cell(largura_util, 10, brand.upper(), ln=True, fill=True)
-            pdf.ln(5)
+            # Faixa da Marca
+            pdf.set_font(font_main, '', 14)
+            pdf.set_fill_color(240, 242, 246)
+            pdf.set_text_color(0, 0, 0)
+            pdf.cell(largura_util, 10, f"  BRAND: {brand.upper()}", ln=True, fill=True)
+            pdf.ln(2)
+
             for it in kept_items:
-                pdf.set_font("Helvetica", "B", 11)
-                # Limpeza Latin-1 apenas para o PDF não quebrar (Chinês será ? no PDF, mas perfeito no Lark)
-                t = it['title'].encode('latin-1', 'ignore').decode('latin-1')
-                pdf.multi_cell(largura_util, 6, txt=t)
-                pdf.set_font("Helvetica", "", 10)
-                s = it['summary'].encode('latin-1', 'ignore').decode('latin-1')
-                pdf.multi_cell(largura_util, 5, txt=s)
-                pdf.ln(5)
+                # Título da Notícia (Azul)
+                pdf.set_font(font_main, '', 11)
+                pdf.set_text_color(0, 86, 179)
+                pdf.multi_cell(largura_util, 7, txt=it['title'])
+                
+                # Resumo Estratégico (Corpo do texto)
+                pdf.set_font(font_main, '', 10)
+                pdf.set_text_color(33, 33, 33)
+                pdf.multi_cell(largura_util, 6, txt=it['summary'])
+                
+                # Linha separadora suave entre notícias
+                pdf.ln(4)
+                pdf.set_draw_color(220, 220, 220)
+                pdf.line(pdf.get_x(), pdf.get_y(), pdf.get_x() + largura_util, pdf.get_y())
+                pdf.ln(4)
     
     return pdf.output()
 
@@ -160,23 +182,26 @@ brands_by_origin = {
 
 with st.sidebar:
     st.header("⚙️ Parameters")
-    if gemini_api_key: st.success("✅ IA Conectada")
-    else: st.error("⚠️ Sem API KEY!")
+    if gemini_api_key: st.success("✅ Agente Conectado")
+    else: st.error("⚠️ Configure a GEMINI_API_KEY")
     st.divider()
-    target_launch = st.checkbox("🎯 Lançamentos", value=False)
+    target_launch = st.checkbox("🎯 Focar em Lançamentos", value=False)
     origins = st.multiselect("Origins:", list(brands_by_origin.keys()), default=["China"])
     available = [b for o in origins for b in brands_by_origin[o]]
     brand_selection = st.multiselect("Brands:", available, default=["Omoda", "BYD"])
     date_range = st.date_input("Period:", value=(datetime.now() - timedelta(days=7), datetime.now()))
 
-    if st.button("🚀 1. Fetch News"):
+    if st.button("🚀 1. Fetch & Analyze News"):
         if gemini_api_key and len(date_range) == 2:
             st.session_state.step1_complete = False
+            for key in list(st.session_state.keys()):
+                if key.startswith("keep_"): del st.session_state[key]
+
             results = {}
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade)"
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
-            with st.spinner("Agente realizando extração e análise estratégica..."):
+            with st.spinner("Analisando notícias sob a ótica de CX e Estratégia..."):
                 for brand in brand_selection:
                     q = f"\"{brand}\" Brasil" + (launch_keywords if target_launch else "") + media_filter
                     full_q = f"{q} after:{date_range[0].strftime('%Y-%m-%d')} before:{date_range[1].strftime('%Y-%m-%d')}"
@@ -199,48 +224,58 @@ with st.sidebar:
 if st.session_state.dossier_data:
     st.header("📝 2. Curate Insights")
     
-    if st.button("✅ Selecionar Tudo"):
-        for brand, items in st.session_state.dossier_data.items():
-            for idx in range(len(items)): st.session_state[f"keep_{brand}_{idx}"] = True
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("✅ Select All"):
+            for brand, items in st.session_state.dossier_data.items():
+                for idx in range(len(items)): st.session_state[f"keep_{brand}_{idx}"] = True
+            st.rerun()
+    with col2:
+        if st.button("❌ Deselect All"):
+            for brand, items in st.session_state.dossier_data.items():
+                for idx in range(len(items)): st.session_state[f"keep_{brand}_{idx}"] = False
+            st.rerun()
 
     for brand, items in st.session_state.dossier_data.items():
         st.subheader(f"🏎️ {brand.upper()}")
         for idx, item in enumerate(items):
-            st.checkbox(f"✅ Incluir no Dossiê ({brand}-{idx+1})", key=f"keep_{brand}_{idx}")
+            st.checkbox(f"✅ Incluir: {brand} ({idx+1})", key=f"keep_{brand}_{idx}")
             st.markdown(f"**Source:** [{item['title']}]({item['link']})")
             st.session_state.dossier_data[brand][idx]['summary'] = st.text_area(f"Edit {brand}-{idx}", value=item['summary'], height=200, key=f"edit_{brand}_{idx}", label_visibility="collapsed")
 
     # --- 5. EXPORT ---
     st.divider()
     if st.button("📄 3. Gerar PDF Final"):
-        # Contagem de segurança
-        selecionados = 0
-        for brand, items in st.session_state.dossier_data.items():
-            selecionados += sum(1 for idx in range(len(items)) if st.session_state.get(f"keep_{brand}_{idx}"))
+        count = sum(1 for brand, items in st.session_state.dossier_data.items() for idx in range(len(items)) if st.session_state.get(f"keep_{brand}_{idx}"))
         
-        if selecionados == 0:
-            st.error("⚠️ Marque ao menos uma notícia antes de gerar o PDF.")
+        if count == 0:
+            st.error("Por favor, selecione ao menos uma notícia antes de gerar o PDF.")
         else:
             try:
                 pdf_output = gerar_pdf_bytes(st.session_state.dossier_data, st.session_state)
                 st.session_state.pdf_output = bytes(pdf_output)
                 st.session_state.step1_complete = True
-                st.success(f"✅ PDF gerado com {selecionados} notícia(s)!")
+                st.success(f"✅ PDF gerado com {count} notícias! Use o botão abaixo.")
             except Exception as e:
-                st.error(f"Erro ao gerar PDF: {e}")
+                st.error(f"Erro ao diagramar o PDF: {e}")
 
     if st.session_state.get('step1_complete'):
-        st.download_button("📥 Baixar PDF Agora", data=st.session_state.pdf_output, file_name="Automotive_Pulse_Dossier.pdf", mime="application/pdf")
+        st.download_button(
+            label="📥 Baixar Dossiê PDF Agora", 
+            data=st.session_state.pdf_output, 
+            file_name=f"Automotive_Dossier_{datetime.now().strftime('%d%m')}.pdf", 
+            mime="application/pdf"
+        )
         
-        st.markdown("### 📤 4. Enviar ao Lark")
-        link_nuvem = st.text_input("🔗 Cole o link da nuvem:")
+        st.markdown("---")
+        st.markdown("### 📤 4. Envio para o Lark")
+        link_nuvem = st.text_input("🔗 Cole o link público da nuvem:")
         if st.button("🚀 Disparar Card no Lark"):
             if link_nuvem:
                 payload = {
                     "msg_type": "interactive",
                     "card": {
-                        "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Intelligence"}, "template": "blue"},
+                        "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Market Intelligence"}, "template": "blue"},
                         "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"**⭐✨ [CLICK TO ACCESS FULL DOSSIER]({link_nuvem}) ✨⭐**"}}]
                     }
                 }
