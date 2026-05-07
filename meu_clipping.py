@@ -34,7 +34,7 @@ def safe_translate(text, target_lang):
     except Exception as e:
         return text
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO AVANÇADA COM BYPASS) ---
+# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO AVANÇADA COM BYPASS JS) ---
 def extrair_texto_da_noticia(url):
     try:
         headers = {
@@ -44,24 +44,42 @@ def extrair_texto_da_noticia(url):
             'Referer': 'https://news.google.com/'
         }
         
-        # A Sessão ajuda a reter cookies, o que diminui bloqueios
         session = requests.Session()
+        # Injeta um cookie falso para burlar a tela de consentimento de cookies do Google
+        session.cookies.set('CONSENT', 'YES+cb.20220419-08-p0.cs+FX+433', domain='.google.com')
+        
         resposta = session.get(url, headers=headers, timeout=15, allow_redirects=True)
         
-        # BYPASS DO GOOGLE NEWS: Se parou em uma tela do Google, procura o link real
+        # BYPASS DO GOOGLE NEWS: Encontrar o link real escondido no código-fonte
         if "news.google.com" in resposta.url or "consent.google.com" in resposta.url:
-            match = re.search(r'URL=["\']?(https?://[^"\'>]+)["\']?', resposta.text, re.IGNORECASE)
-            if match:
-                url_real = match.group(1)
-                resposta = session.get(url_real, headers=headers, timeout=15)
-        
+            # O Google esconde a URL de destino dentro do HTML. Vamos pescar qualquer link externo.
+            urls_encontradas = re.findall(r'(?:href=["\']|URL=\'?)(https?://[^"\'<>]+)', resposta.text, re.IGNORECASE)
+            
+            url_real = None
+            for u in urls_encontradas:
+                # Descartamos links internos do Google para focar apenas no site da notícia real
+                if not any(dominio in u for dominio in ["google.com", "schema.org", "w3.org", "gstatic.com"]):
+                    url_real = u
+                    break
+            
+            # Se achamos o site real, fazemos a viagem pra lá
+            if url_real:
+                # Limpa redirecionadores extras do google (ex: google.com/url?q=...)
+                if "url?q=" in url_real:
+                    parsed = urllib.parse.urlparse(url_real)
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    if 'q' in qs:
+                        url_real = qs['q'][0]
+                        
+                resposta = session.get(url_real, headers=headers, timeout=15, allow_redirects=True)
+
         # Verifica se o site da notícia deixou a gente entrar
         if resposta.status_code == 200:
             texto = trafilatura.extract(resposta.text)
             if texto and len(texto) > 150:
                 return texto
             else:
-                return f"Erro: O robô acessou a página, mas não achou o texto. URL Final: {resposta.url}"
+                return f"Erro: O robô chegou no site, mas não achou texto suficiente. URL Final: {resposta.url}"
         else:
             return f"Erro: O site bloqueou o acesso. Código HTTP: {resposta.status_code} - URL Final: {resposta.url}"
             
@@ -69,6 +87,7 @@ def extrair_texto_da_noticia(url):
         return "Erro: O site demorou muito para responder."
     except Exception as e:
         return f"Erro na conexão: {e}"
+# -----------------------------------------------------------------------------
 
 # --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
 def resumir_noticia_com_gemini(texto, api_key):
