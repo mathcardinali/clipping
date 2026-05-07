@@ -38,7 +38,6 @@ def safe_translate(text, target_lang):
 
 def extrair_texto_da_noticia(url):
     try:
-        # BYPASS DEFINITIVO GOOGLE NEWS
         if "news.google.com" in url:
             try:
                 resultado = gnewsdecoder(url)
@@ -52,12 +51,12 @@ def extrair_texto_da_noticia(url):
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'}
         session = requests.Session()
         resposta = session.get(url, headers=headers, timeout=15, allow_redirects=True)
-        dominio = urllib.parse.urlparse(url).netloc.replace("www.", "")
+        dominio_real = urllib.parse.urlparse(url).netloc.replace("www.", "")
         
         if resposta.status_code == 200:
             texto = trafilatura.extract(resposta.text)
-            return texto if texto and len(texto) > 150 else f"- Texto insuficiente em {dominio} -"
-        return f"- Bloqueio no site {dominio} (Erro {resposta.status_code}) -"
+            return texto if texto and len(texto) > 150 else f"- Texto insuficiente em {dominio_real} -"
+        return f"- Bloqueio no site {dominio_real} (Erro {resposta.status_code}) -"
     except Exception as e:
         return f"- Erro de conexão: {e} -"
 
@@ -68,24 +67,40 @@ def resumir_noticia_com_gemini(texto, api_key):
     try:
         genai.configure(api_key=api_key)
         
-        # RESOLUÇÃO DO ERRO 404: Busca dinâmica de modelos ativos na sua conta
+        # BUSCA DINÂMICA: Resolve erro 404 selecionando o modelo correto na conta
         model_name = None
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                if 'flash' in m.name.lower():
-                    model_name = m.name
-                    break
-        if not model_name: model_name = 'models/gemini-1.5-flash'
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    if 'flash' in m.name.lower():
+                        model_name = m.name
+                        break
+            if not model_name:
+                for m in genai.list_models():
+                    if 'generateContent' in m.supported_generation_methods:
+                        model_name = m.name
+                        break
+        except:
+            model_name = 'models/gemini-1.5-flash'
 
-        instructions = """
-        Act as a specialized Automotive Strategy and CX Analyst. 
-        Output: Bilingual (English followed by Chinese). Plain text only. 
-        Structure: Technical/Performance (if applicable), Market & Strategic Insight, Customer Impact.
+        # CONFIGURAÇÃO DE ANÁLISE RESTAURADA (CX ANALYST)
+        system_instruction = """
+        Role & Instructions:
+        Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
+
+        Rules for Output:
+        Language: Always respond in both English and Chinese (English text followed immediately by its Chinese translation).
+        Formatting: Never use bold text (no asterisks). Use plain text only to ensure easy copy-pasting.
+        Length: Keep the total response under 1000 characters (including both languages).
+        Structure:
+        Technical/Performance (Bilingual) — Include this section ONLY if the news is directly related to vehicle launches, physical products, or technical specifications. Otherwise, omit it entirely.
+        Market & Strategic Insight (Bilingual) — A single combined section.
+        Customer Impact (Bilingual) — A final short paragraph.
         """
         
-        model = genai.GenerativeModel(model_name=model_name, system_instruction=instructions)
+        model = genai.GenerativeModel(model_name=model_name, system_instruction=system_instruction)
         
-        # Retry loop para erro 429 (Quota)
+        # Retry loop para erros de quota (429)
         for _ in range(3):
             try:
                 response = model.generate_content(texto[:6000])
@@ -102,27 +117,32 @@ def gerar_pdf_bytes(dossier_data, session_state):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
+    
+    largura_util = pdf.epw # Resolve o erro "Not enough horizontal space"
+
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, "Automotive Market Intelligence Dossier", ln=True, align="C")
+    pdf.cell(largura_util, 10, "Automotive Market Intelligence Dossier", ln=True, align="C")
+    pdf.set_font("Helvetica", "I", 10)
+    pdf.cell(largura_util, 10, f"Researcher: Matheus Cardinali | Date: {datetime.now().strftime('%d/%m/%Y')}", ln=True, align="C")
     pdf.ln(10)
 
     for brand, items in dossier_data.items():
-        # Filtra apenas o que o usuário marcou o checkbox
         kept_items = [it for idx, it in enumerate(items) if session_state.get(f"keep_{brand}_{idx}")]
         if kept_items:
             pdf.set_font("Helvetica", "B", 14)
             pdf.set_fill_color(230, 230, 230)
-            pdf.cell(0, 10, brand.upper(), ln=True, fill=True)
+            pdf.cell(largura_util, 10, brand.upper(), ln=True, fill=True)
             pdf.ln(5)
             for it in kept_items:
                 pdf.set_font("Helvetica", "B", 11)
-                # Limpeza para evitar erro de Encoding no PDF (Remove Chinês apenas no PDF)
+                # Limpeza Latin-1 apenas para o PDF não quebrar (Chinês será ? no PDF, mas perfeito no Lark)
                 t = it['title'].encode('latin-1', 'ignore').decode('latin-1')
-                pdf.multi_cell(0, 6, txt=t)
+                pdf.multi_cell(largura_util, 6, txt=t)
                 pdf.set_font("Helvetica", "", 10)
                 s = it['summary'].encode('latin-1', 'ignore').decode('latin-1')
-                pdf.multi_cell(0, 5, txt=s)
+                pdf.multi_cell(largura_util, 5, txt=s)
                 pdf.ln(5)
+    
     return pdf.output()
 
 # --- 2. SESSION STATE ---
@@ -156,7 +176,7 @@ with st.sidebar:
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade)"
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
-            with st.spinner("Agente trabalhando..."):
+            with st.spinner("Agente realizando extração e análise estratégica..."):
                 for brand in brand_selection:
                     q = f"\"{brand}\" Brasil" + (launch_keywords if target_launch else "") + media_filter
                     full_q = f"{q} after:{date_range[0].strftime('%Y-%m-%d')} before:{date_range[1].strftime('%Y-%m-%d')}"
@@ -187,32 +207,43 @@ if st.session_state.dossier_data:
     for brand, items in st.session_state.dossier_data.items():
         st.subheader(f"🏎️ {brand.upper()}")
         for idx, item in enumerate(items):
-            st.checkbox(f"✅ Incluir no Dossiê", key=f"keep_{brand}_{idx}")
+            st.checkbox(f"✅ Incluir no Dossiê ({brand}-{idx+1})", key=f"keep_{brand}_{idx}")
             st.markdown(f"**Source:** [{item['title']}]({item['link']})")
             st.session_state.dossier_data[brand][idx]['summary'] = st.text_area(f"Edit {brand}-{idx}", value=item['summary'], height=200, key=f"edit_{brand}_{idx}", label_visibility="collapsed")
 
+    # --- 5. EXPORT ---
     st.divider()
-    if st.button("📄 3. Finalizar e Gerar PDF"):
-        try:
-            pdf_bytes = gerar_pdf_bytes(st.session_state.dossier_data, st.session_state)
-            st.session_state.pdf_output = bytes(pdf_bytes)
-            st.session_state.step1_complete = True
-            st.success("PDF Gerado com Sucesso!")
-        except Exception as e:
-            st.error(f"Erro ao gerar PDF: {e}")
+    if st.button("📄 3. Gerar PDF Final"):
+        # Contagem de segurança
+        selecionados = 0
+        for brand, items in st.session_state.dossier_data.items():
+            selecionados += sum(1 for idx in range(len(items)) if st.session_state.get(f"keep_{brand}_{idx}"))
+        
+        if selecionados == 0:
+            st.error("⚠️ Marque ao menos uma notícia antes de gerar o PDF.")
+        else:
+            try:
+                pdf_output = gerar_pdf_bytes(st.session_state.dossier_data, st.session_state)
+                st.session_state.pdf_output = bytes(pdf_output)
+                st.session_state.step1_complete = True
+                st.success(f"✅ PDF gerado com {selecionados} notícia(s)!")
+            except Exception as e:
+                st.error(f"Erro ao gerar PDF: {e}")
 
     if st.session_state.get('step1_complete'):
-        st.download_button("📥 Baixar PDF Agora", data=st.session_state.pdf_output, file_name="Automotive_Dossier.pdf", mime="application/pdf")
+        st.download_button("📥 Baixar PDF Agora", data=st.session_state.pdf_output, file_name="Automotive_Pulse_Dossier.pdf", mime="application/pdf")
         
         st.markdown("### 📤 4. Enviar ao Lark")
-        link_nuvem = st.text_input("Cole o link da nuvem:")
-        if st.button("🚀 Disparar Lark"):
-            payload = {
-                "msg_type": "interactive",
-                "card": {
-                    "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Intelligence"}, "template": "blue"},
-                    "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"**[CLICK TO ACCESS DOSSIER]({link_nuvem})**"}}]
+        link_nuvem = st.text_input("🔗 Cole o link da nuvem:")
+        if st.button("🚀 Disparar Card no Lark"):
+            if link_nuvem:
+                payload = {
+                    "msg_type": "interactive",
+                    "card": {
+                        "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Intelligence"}, "template": "blue"},
+                        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": f"**⭐✨ [CLICK TO ACCESS FULL DOSSIER]({link_nuvem}) ✨⭐**"}}]
+                    }
                 }
-            }
-            requests.post(WEBHOOK_URL, json=payload)
-            st.success("Enviado!")
+                requests.post(WEBHOOK_URL, json=payload)
+                st.success("Enviado com sucesso!")
+                st.balloons()
