@@ -109,7 +109,7 @@ def resumir_noticia_com_gemini(texto, api_key):
     except Exception as e:
         return f"- Configuration Error: {e} -"
 
-# --- PDF GENERATION WITH CHINESE SUPPORT & LINKS ---
+# --- PDF GENERATION WITH CHINESE SUPPORT & EMBEDDED LINKS ---
 def gerar_pdf_bytes(dossier_data, session_state):
     pdf = FPDF()
     pdf.set_auto_page_break(auto=True, margin=15)
@@ -121,7 +121,6 @@ def gerar_pdf_bytes(dossier_data, session_state):
         pdf.add_font('Firefly', '', font_path)
         font_main = 'Firefly'
     else:
-        st.sidebar.warning("⚠️ 'fireflysung.ttf' not found. Chinese characters will be omitted in the PDF.")
         font_main = 'Helvetica'
 
     largura_util = pdf.epw 
@@ -149,13 +148,14 @@ def gerar_pdf_bytes(dossier_data, session_state):
             for it in kept_items:
                 pdf.set_x(pdf.l_margin)
                 
-                # News Title
+                # News Title with EMBEDDED LINK
                 pdf.set_font(font_main, 'B' if font_main == 'Helvetica' else '', 11)
                 pdf.set_text_color(0, 86, 179)
                 clean_title = it['title'].encode('latin-1', 'replace').decode('latin-1') if font_main == 'Helvetica' else it['title']
-                pdf.multi_cell(largura_util, 7, txt=clean_title, align='L')
                 
-                pdf.ln(1)
+                # Use write() to wrap text while embedding the clickable URL
+                pdf.write(7, txt=clean_title, link=it['link'])
+                pdf.ln(8) # Line break after title
                 pdf.set_x(pdf.l_margin)
 
                 # Strategic Summary
@@ -163,13 +163,6 @@ def gerar_pdf_bytes(dossier_data, session_state):
                 pdf.set_text_color(33, 33, 33)
                 clean_summary = it['summary'].encode('latin-1', 'replace').decode('latin-1') if font_main == 'Helvetica' else it['summary']
                 pdf.multi_cell(largura_util, 6, txt=clean_summary, align='L')
-                
-                # PDF Link to Original Source
-                pdf.ln(2)
-                pdf.set_x(pdf.l_margin)
-                pdf.set_font(font_main, 'U' if font_main == 'Helvetica' else '', 10)
-                pdf.set_text_color(0, 86, 179) # Link Blue
-                pdf.cell(largura_util, 6, txt="[ Source Link ]", link=it['link'], ln=True)
                 
                 # Divider
                 pdf.ln(4)
@@ -182,7 +175,10 @@ def gerar_pdf_bytes(dossier_data, session_state):
 # --- 2. SESSION STATE ---
 if 'raw_fetched_news' not in st.session_state: st.session_state.raw_fetched_news = {}
 if 'dossier_data' not in st.session_state: st.session_state.dossier_data = {}
-if 'step_pdf_ready' not in st.session_state: st.session_state.step_pdf_ready = False
+
+# Salva as datas do período para usar no Header do Lark
+if 'd_ini_str' not in st.session_state: st.session_state.d_ini_str = ""
+if 'd_end_str' not in st.session_state: st.session_state.d_end_str = ""
 
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 
@@ -204,15 +200,22 @@ with st.sidebar:
     origins = st.multiselect("Origins:", list(brands_by_origin.keys()), default=["China"])
     available = [b for o in origins for b in brands_by_origin[o]]
     brand_selection = st.multiselect("Brands:", available, default=["Omoda", "BYD"])
-    date_range = st.date_input("Period:", value=(datetime.now() - timedelta(days=7), datetime.now()))
+    
+    # PERÍODO: Default = Ontem a Ontem
+    yesterday = datetime.now() - timedelta(days=1)
+    date_range = st.date_input("Period:", value=(yesterday, yesterday))
 
-    # STEP 1: ONLY FETCH LINKS (SAVES API COSTS)
+    # STEP 1: ONLY FETCH LINKS
     if st.button("🚀 1. Fetch News Links"):
         if gemini_api_key and len(date_range) == 2:
-            st.session_state.step_pdf_ready = False
             st.session_state.dossier_data = {} # Clear old AI summaries
             
             d_ini, d_end = date_range
+            
+            # Salva no estado para o Lark
+            st.session_state.d_ini_str = d_ini.strftime('%m/%d')
+            st.session_state.d_end_str = d_end.strftime('%m/%d')
+
             results_raw = {}
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade OR \"modelo 2027\" OR \"modelo 2026\")"
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
@@ -253,8 +256,13 @@ if st.session_state.raw_fetched_news and not st.session_state.dossier_data:
         st.subheader(f"🏎️ {brand.upper()}")
         selected_to_process[brand] = []
         for idx, item in enumerate(items):
-            if st.checkbox(f"Analyze: {item['title']}", value=False, key=f"raw_select_{brand}_{idx}"):
-                selected_to_process[brand].append(item)
+            # TELA 2: Checkbox de um lado, Título EMBEDDADO COM LINK do outro
+            col_cb, col_text = st.columns([0.05, 0.95])
+            with col_cb:
+                if st.checkbox("", value=False, key=f"raw_select_{brand}_{idx}"):
+                    selected_to_process[brand].append(item)
+            with col_text:
+                st.markdown(f"**[{item['title']}]({item['link']})**")
 
     st.divider()
     if st.button("🧠 3. Summarize Selected with AI"):
@@ -279,9 +287,9 @@ if st.session_state.raw_fetched_news and not st.session_state.dossier_data:
             st.session_state.dossier_data = final_dossier
             st.rerun()
 
-# --- 5. EDITING & PDF EXPORT ---
+# --- 5. EDITING & UNIFIED PDF EXPORT ---
 if st.session_state.dossier_data:
-    st.header("📑 4. Curate Insights & Generate PDF")
+    st.header("📑 4. Curate Insights & Download")
     st.info("Review the summaries below before exporting.")
     
     for brand, items in st.session_state.dossier_data.items():
@@ -292,55 +300,58 @@ if st.session_state.dossier_data:
             st.session_state.dossier_data[brand][idx]['summary'] = st.text_area(f"Edit {brand}-{idx}", value=item['summary'], height=200, key=f"edit_{brand}_{idx}", label_visibility="collapsed")
 
     st.divider()
-    if st.button("📄 5. Generate Final PDF"):
-        count = sum(1 for brand, items in st.session_state.dossier_data.items() for idx in range(len(items)) if st.session_state.get(f"keep_{brand}_{idx}"))
-        if count == 0:
-            st.error("Please check at least one article to include in the PDF.")
-        else:
-            try:
-                pdf_output = gerar_pdf_bytes(st.session_state.dossier_data, st.session_state)
-                st.session_state.pdf_output = bytes(pdf_output)
-                st.session_state.step_pdf_ready = True
-                st.success(f"✅ PDF successfully generated with {count} article(s)!")
-            except Exception as e:
-                st.error(f"Failed to generate PDF: {e}")
+    
+    # UNIFICAÇÃO: Calcula dados na hora e já oferece o Botão de Download (Elimina o click extra)
+    count = sum(1 for brand, items in st.session_state.dossier_data.items() for idx in range(len(items)) if st.session_state.get(f"keep_{brand}_{idx}"))
+    
+    if count == 0:
+        st.warning("Please check at least one article to include in the PDF.")
+    else:
+        try:
+            pdf_bytes = gerar_pdf_bytes(st.session_state.dossier_data, st.session_state)
+            
+            # Botão 5 de Download gerando arquivo com Nome = Data (YYYY-MM-DD.pdf)
+            nome_arquivo = f"{datetime.now().strftime('%Y-%m-%d')}.pdf"
+            
+            st.download_button(
+                label="📥 5. Download Final PDF Dossier", 
+                data=bytes(pdf_bytes), 
+                file_name=nome_arquivo, 
+                mime="application/pdf"
+            )
+        except Exception as e:
+            st.error(f"Failed to generate PDF: {e}")
 
-    # --- LARK SYNC ---
-    if st.session_state.get('step_pdf_ready'):
-        st.download_button(
-            label="📥 Download PDF Dossier", 
-            data=st.session_state.pdf_output, 
-            file_name=f"Automotive_Dossier_{datetime.now().strftime('%m%d')}.pdf", 
-            mime="application/pdf"
-        )
-        
-        st.markdown("---")
-        st.markdown("### 📤 6. Send to Lark / Feishu")
-        link_nuvem = st.text_input("🔗 Paste the public cloud link here:")
-        
-        if st.button("🚀 Push to Lark"):
-            if link_nuvem:
-                # BUILDING THE LARK CARD BILINGUAL & INCLUDING NEWS
-                lark_elements = [
-                    {"tag": "div", "text": {"tag": "lark_md", "content": f"**⭐✨ [CLICK TO ACCESS FULL DOSSIER / 点击获取完整档案]({link_nuvem}) ✨⭐**"}},
-                    {"tag": "hr"}
-                ]
-                
-                for brand, items in st.session_state.dossier_data.items():
-                    kept = [it for idx, it in enumerate(items) if st.session_state.get(f"keep_{brand}_{idx}")]
-                    if kept:
-                        links_md = [f"• [{it['title']}]({it['link']})" for it in kept]
-                        lark_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{brand.upper()}**\n" + "\n".join(links_md)}})
-                        lark_elements.append({"tag": "hr"})
+    # --- LARK SYNC (HEADER RESTAURADO) ---
+    st.markdown("---")
+    st.markdown("### 📤 6. Send to Lark / Feishu")
+    link_nuvem = st.text_input("🔗 Paste the public cloud link here:")
+    
+    if st.button("🚀 Push to Lark"):
+        if link_nuvem:
+            # LARK CARD BILINGUAL & COM CABEÇALHO RESTAURADO
+            lark_elements = [
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"📍 **Focus Country / 重点国家:** Brazil / 巴西\n📅 **Period / 期间:** {st.session_state.d_ini_str} to {st.session_state.d_end_str}"}},
+                {"tag": "hr"},
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"**⭐✨ [CLICK TO ACCESS FULL DOSSIER / 点击获取完整档案]({link_nuvem}) ✨⭐**"}},
+                {"tag": "hr"}
+            ]
+            
+            for brand, items in st.session_state.dossier_data.items():
+                kept = [it for idx, it in enumerate(items) if st.session_state.get(f"keep_{brand}_{idx}")]
+                if kept:
+                    links_md = [f"• [{it['title']}]({it['link']})" for it in kept]
+                    lark_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{brand.upper()}**\n" + "\n".join(links_md)}})
+                    lark_elements.append({"tag": "hr"})
 
-                payload = {
-                    "msg_type": "interactive",
-                    "card": {
-                        "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Market Intelligence"}, "template": "blue"},
-                        "elements": lark_elements
-                    }
+            payload = {
+                "msg_type": "interactive",
+                "card": {
+                    "header": {"title": {"tag": "plain_text", "content": "🚗 Automotive Market Intelligence"}, "template": "blue"},
+                    "elements": lark_elements
                 }
-                
-                requests.post(WEBHOOK_URL, json=payload)
-                st.success("Successfully sent to Lark!")
-                st.balloons()
+            }
+            
+            requests.post(WEBHOOK_URL, json=payload)
+            st.success("Successfully sent to Lark!")
+            st.balloons()
