@@ -3,12 +3,14 @@ import feedparser
 import requests
 import urllib.parse
 import re 
+import json
+import html
 from datetime import datetime, timedelta, time as dt_time
 from time import mktime
 from deep_translator import GoogleTranslator
 import trafilatura 
 import google.generativeai as genai
-import base64
+from googlenewsdecoder import gnewsdecoder # <-- NOVO IMPORT
 
 # --- 1. CORE CONFIGURATION ---
 st.set_page_config(page_title="🚗 Automotive Pulse Digest", layout="wide")
@@ -35,26 +37,31 @@ def safe_translate(text, target_lang):
     except Exception as e:
         return text
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO COM API BATCHEXECUTE DO GOOGLE) ---
+# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO COM DESCRIPTOGRAFIA AVANÇADA) ---
 def extrair_texto_da_noticia(url):
     try:
-        # 1. BYPASS DEFINITIVO: Resolve a URL real usando a API interna do Google
-        if "news.google.com/rss/articles/" in url:
-            match = re.search(r'articles/([^?]+)', url)
-            if match:
-                article_id = match.group(1)
-                req_payload = f'[[["Fbv4je","[\\"garturlreq\\",[[\\"en-US\\",\\"US\\",[\\"FINANCE_TOP_INDICES\\",\\"WEB_TEST_1_0_0\\"],null,null,1,1,\\"US:en\\",null,180,null,null,null,null,null,0,null,null,[1608992183,723341000]],\\"en-US\\",\\"US\\",1,[2,3,4,8],1,0,\\"655000234\\",0,0,null,0],\\"{article_id}\\"]",null,"generic"]]]'
-                
+        # 1. BYPASS DEFINITIVO: Quebrando a criptografia do Google News
+        if "news.google.com" in url:
+            try:
+                # Tenta usar a biblioteca oficial (Plano A)
+                resultado = gnewsdecoder(url)
+                if isinstance(resultado, dict) and resultado.get("status"):
+                    url = resultado.get("decoded_url")
+                elif isinstance(resultado, str) and resultado.startswith("http"):
+                    url = resultado
+            except Exception:
+                # Engenharia Reversa do token dinâmico (Plano B)
                 try:
-                    res_google = requests.post(
-                        "https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je",
-                        headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
-                        data={"f.req": req_payload},
-                        timeout=10
-                    )
-                    url_real_match = re.search(r'(https?://[a-zA-Z0-9-._~:/?#\[\]@!$&\'()*+,;=%]+)', res_google.text)
-                    if url_real_match:
-                        url = url_real_match.group(1)
+                    resp_g = requests.get(url, timeout=10)
+                    match = re.search(r'data-p="([^"]+)"', resp_g.text)
+                    if match:
+                        data_p = html.unescape(match.group(1))
+                        obj = json.loads(data_p.replace('%.@.', '["garturlreq",'))
+                        payload = {'f.req': json.dumps([[['Fbv4je', json.dumps(obj[:-6] + obj[-2:]), 'null', 'generic']]])}
+                        res_api = requests.post("https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je", data=payload, headers={'content-type': 'application/x-www-form-urlencoded;charset=utf-8'})
+                        url_real_match = re.search(r'(https?://[^"]+)', res_api.text)
+                        if url_real_match:
+                            url = url_real_match.group(1)
                 except Exception:
                     pass
 
@@ -73,9 +80,9 @@ def extrair_texto_da_noticia(url):
             if texto and len(texto) > 150:
                 return texto
             else:
-                return f"- Acesso liberado ao site ({dominio_real}), mas a Inteligência Artificial não achou um texto estruturado para ler (Pode ser uma página de Fotos, Vídeo ou Paywall). -"
+                return f"- Acesso liberado ao site ({dominio_real}), mas a IA não achou texto longo o suficiente (Pode ser uma página de Fotos, Vídeo ou Paywall restrito). -"
         else:
-            return f"- O site ({dominio_real}) possui bloqueio contra robôs (Erro {resposta.status_code}). -"
+            return f"- O site ({dominio_real}) bloqueou o robô (Erro HTTP {resposta.status_code}). -"
             
     except requests.exceptions.Timeout:
         return "- O site final demorou muito para responder e derrubou a conexão do Agente. -"
@@ -155,7 +162,7 @@ with st.sidebar:
     st.header("⚙️ Market Parameters")
     
     if gemini_api_key:
-        st.success("✅ Agente de IA Conectado (API Key Segura)")
+        st.success("✅ Agente de IA Conectado")
     else:
         st.error("⚠️ Falta configurar a GEMINI_API_KEY nos secrets do Streamlit!")
     st.divider()
