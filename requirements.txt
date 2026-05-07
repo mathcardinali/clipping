@@ -4,3 +4,4 @@ requests
 deep-translator
 trafilatura
 google-generativeai
+googlenewsdecoder
