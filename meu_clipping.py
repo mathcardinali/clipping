@@ -35,58 +35,60 @@ def safe_translate(text, target_lang):
     except Exception as e:
         return text
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO COM API BATCHEXECUTE DO GOOGLE) ---
-def extrair_texto_da_noticia(url):
+# --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI INTELIGENTE) ---
+def resumir_noticia_com_gemini(texto, api_key):
+    if not api_key:
+        return "- Erro: Chave de API não encontrada nos Secrets. -"
+    
+    if "Erro:" in texto or "- Acesso liberado" in texto or "- O site" in texto:
+        return f"- Falha Técnica na Leitura: {texto} -"
+        
     try:
-        # 1. BYPASS DEFINITIVO: Resolve a URL real usando a API interna do Google
-        if "news.google.com/rss/articles/" in url:
-            match = re.search(r'articles/([^?]+)', url)
-            if match:
-                article_id = match.group(1)
-                
-                # Payload mágico de descriptografia para a API do Google (Fbv4je)
-                req_payload = f'[[["Fbv4je","[\\"garturlreq\\",[[\\"en-US\\",\\"US\\",[\\"FINANCE_TOP_INDICES\\",\\"WEB_TEST_1_0_0\\"],null,null,1,1,\\"US:en\\",null,180,null,null,null,null,null,0,null,null,[1608992183,723341000]],\\"en-US\\",\\"US\\",1,[2,3,4,8],1,0,\\"655000234\\",0,0,null,0],\\"{article_id}\\"]",null,"generic"]]]'
-                
-                try:
-                    res_google = requests.post(
-                        "https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je",
-                        headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
-                        data={"f.req": req_payload},
-                        timeout=10
-                    )
+        genai.configure(api_key=api_key)
+        
+        # BUSCA DINÂMICA DE MODELOS: Varre a API e pega o nome do modelo correto ativo hoje
+        model_name = None
+        
+        # 1. Tenta encontrar a versão mais atual do Flash (rápida e barata)
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                if 'flash' in m.name.lower():
+                    model_name = m.name
+                    break
+        
+        # 2. Se não achar o Flash, pega literalmente qualquer modelo de texto liberado na sua chave
+        if not model_name:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    model_name = m.name
+                    break
                     
-                    # Extrai a URL verdadeira (ex: uol.com.br, autoesporte...) do JSON sujo retornado
-                    url_real_match = re.search(r'(https?://[a-zA-Z0-9-._~:/?#\[\]@!$&\'()*+,;=%]+)', res_google.text)
-                    if url_real_match:
-                        url = url_real_match.group(1)
-                except Exception:
-                    pass # Se a API falhar, segue com a URL original
+        if not model_name:
+            return "- Erro: A sua chave de API não tem permissão para nenhum modelo de geração de texto. -"
 
-        # 2. Agora o robô vai bater direto na porta do site de notícias real!
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
-        }
+        # Instancia o modelo encontrado automaticamente (ex: 'models/gemini-1.5-flash-latest')
+        model = genai.GenerativeModel(model_name)
         
-        session = requests.Session()
-        resposta = session.get(url, headers=headers, timeout=15, allow_redirects=True)
+        system_instruction = """
+        Role & Instructions:
+        Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
+
+        Rules for Output:
+        Language: Always respond in both English and Chinese (English text followed immediately by its Chinese translation).
+        Formatting: Never use bold text (no asterisks). Use plain text only to ensure easy copy-pasting.
+        Length: Keep the total response under 1000 characters (including both languages).
+        Structure:
+        Technical/Performance (Bilingual) — Include this section ONLY if the news is directly related to vehicle launches, physical products, or technical specifications. Otherwise, omit it entirely.
+        Market & Strategic Insight (Bilingual) — A single combined section.
+        Customer Impact (Bilingual) — A final short paragraph.
+        """
         
-        # Pega o domínio apenas para nos dizer qual site está sendo lido
-        dominio_real = urllib.parse.urlparse(url).netloc.replace("www.", "")
+        prompt = f"{system_instruction}\n\n--- NEWS ARTICLE TEXT ---\n{texto}"
         
-        if resposta.status_code == 200:
-            texto = trafilatura.extract(resposta.text)
-            if texto and len(texto) > 150:
-                return texto
-            else:
-                return f"- Acesso liberado ao site ({dominio_real}), mas a Inteligência Artificial não achou um texto estruturado para ler (Pode ser uma página de Galeria de Fotos, Vídeo ou Paywall). -"
-        else:
-            return f"- O site ({dominio_real}) possui bloqueio contra robôs (Erro {resposta.status_code}). -"
-            
-    except requests.exceptions.Timeout:
-        return "- O site final demorou muito para responder e derrubou a conexão do Agente. -"
+        response = model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
-        return f"- Erro fatal na conexão: {e} -"
+        return f"- Erro da API do Gemini: {e} -"
 # -----------------------------------------------------------------------------
 
 # --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
