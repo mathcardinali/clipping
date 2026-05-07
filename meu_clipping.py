@@ -78,7 +78,8 @@ brands_by_origin = {
 with st.sidebar:
     st.header("⚙️ Market Parameters")
     
-    target_launch = st.checkbox("🎯 Focar em Lançamentos/Segredos", value=True)
+    # --- CORREÇÃO AQUI: Mudado para value=False ---
+    target_launch = st.checkbox("🎯 Focar em Lançamentos/Segredos", value=False)
     
     origins = st.multiselect("Origins:", list(brands_by_origin.keys()), default=["China"])
     available = []
