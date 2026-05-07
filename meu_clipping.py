@@ -35,26 +35,34 @@ def safe_translate(text, target_lang):
     except Exception as e:
         return text
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO COM BYPASS CRIPTOGRÁFICO) ---
+# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO COM API BATCHEXECUTE DO GOOGLE) ---
 def extrair_texto_da_noticia(url):
     try:
-        # BYPASS DEFINITIVO: Descriptografar o link original escondido no Base64 do Google
+        # 1. BYPASS DEFINITIVO: Resolve a URL real usando a API interna do Google
         if "news.google.com/rss/articles/" in url:
             match = re.search(r'articles/([^?]+)', url)
             if match:
-                codigo_base64 = match.group(1)
-                codigo_base64 += "===" # Adiciona padding necessário para o Python ler
+                article_id = match.group(1)
+                
+                # Payload mágico de descriptografia para a API do Google (Fbv4je)
+                req_payload = f'[[["Fbv4je","[\\"garturlreq\\",[[\\"en-US\\",\\"US\\",[\\"FINANCE_TOP_INDICES\\",\\"WEB_TEST_1_0_0\\"],null,null,1,1,\\"US:en\\",null,180,null,null,null,null,null,0,null,null,[1608992183,723341000]],\\"en-US\\",\\"US\\",1,[2,3,4,8],1,0,\\"655000234\\",0,0,null,0],\\"{article_id}\\"]",null,"generic"]]]'
+                
                 try:
-                    # Desfaz a criptografia
-                    texto_bruto = base64.urlsafe_b64decode(codigo_base64)
-                    # Usa Regex para encontrar o link "http" limpo dentro dos bytes desembaralhados
-                    url_match = re.search(rb'(https?://[^"\x00-\x1f\x7f]+)', texto_bruto)
-                    if url_match:
-                        url = url_match.group(1).decode('utf-8', errors='ignore')
+                    res_google = requests.post(
+                        "https://news.google.com/_/DotsSplashUi/data/batchexecute?rpcids=Fbv4je",
+                        headers={"Content-Type": "application/x-www-form-urlencoded;charset=utf-8"},
+                        data={"f.req": req_payload},
+                        timeout=10
+                    )
+                    
+                    # Extrai a URL verdadeira (ex: uol.com.br, autoesporte...) do JSON sujo retornado
+                    url_real_match = re.search(r'(https?://[a-zA-Z0-9-._~:/?#\[\]@!$&\'()*+,;=%]+)', res_google.text)
+                    if url_real_match:
+                        url = url_real_match.group(1)
                 except Exception:
-                    pass # Se falhar, tenta com a URL original do Google mesmo
+                    pass # Se a API falhar, segue com a URL original
 
-        # Agora o robô vai bater direto na porta do site de notícias real!
+        # 2. Agora o robô vai bater direto na porta do site de notícias real!
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7'
@@ -63,19 +71,22 @@ def extrair_texto_da_noticia(url):
         session = requests.Session()
         resposta = session.get(url, headers=headers, timeout=15, allow_redirects=True)
         
+        # Pega o domínio apenas para nos dizer qual site está sendo lido
+        dominio_real = urllib.parse.urlparse(url).netloc.replace("www.", "")
+        
         if resposta.status_code == 200:
             texto = trafilatura.extract(resposta.text)
             if texto and len(texto) > 150:
                 return texto
             else:
-                return f"Erro: Acesso liberado ao site ({url}), mas o extrator não achou texto relevante."
+                return f"- Acesso liberado ao site ({dominio_real}), mas a Inteligência Artificial não achou um texto estruturado para ler (Pode ser uma página de Galeria de Fotos, Vídeo ou Paywall). -"
         else:
-            return f"Erro: Bloqueio no site final. Código HTTP: {resposta.status_code} - URL: {url}"
+            return f"- O site ({dominio_real}) possui bloqueio contra robôs (Erro {resposta.status_code}). -"
             
     except requests.exceptions.Timeout:
-        return "Erro: O site final demorou muito para responder."
+        return "- O site final demorou muito para responder e derrubou a conexão do Agente. -"
     except Exception as e:
-        return f"Erro na conexão com o site final: {e}"
+        return f"- Erro fatal na conexão: {e} -"
 # -----------------------------------------------------------------------------
 
 # --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
