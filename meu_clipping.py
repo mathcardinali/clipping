@@ -310,8 +310,8 @@ if st.session_state.dossier_data:
         try:
             pdf_bytes = gerar_pdf_bytes(st.session_state.dossier_data, st.session_state)
             
-            # Botão 5 de Download gerando arquivo com Nome = Data (YYYY-MM-DD.pdf)
-            nome_arquivo = f"{datetime.now().strftime('%Y-%m-%d')}.pdf"
+            # Botão 5 de Download gerando arquivo com Nome = Automotive_Pulse_DDMMYY.pdf
+            nome_arquivo = f"Automotive_Pulse_{datetime.now().strftime('%d%m%y')}.pdf"
             
             st.download_button(
                 label="📥 5. Download Final PDF Dossier", 
