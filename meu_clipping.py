@@ -34,45 +34,39 @@ def safe_translate(text, target_lang):
     except Exception as e:
         return text
 
-# --- FUNÇÃO DO AGENTE VIRTUAL (EXTRAÇÃO AVANÇADA COM BYPASS) ---
-def extrair_texto_da_noticia(url):
+# --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
+def resumir_noticia_com_gemini(texto, api_key):
+    if not api_key:
+        return "- Erro: Chave de API não encontrada nos Secrets. -"
+    
+    # A MUDANÇA ESTÁ AQUI: Agora ele vai imprimir o erro real do nosso rastreador!
+    if "Erro:" in texto:
+        return f"- Falha Técnica: {texto} -"
+        
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Referer': 'https://news.google.com/'
-        }
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
-        # A Sessão ajuda a reter cookies, o que diminui bloqueios
-        session = requests.Session()
-        resposta = session.get(url, headers=headers, timeout=15, allow_redirects=True)
+        system_instruction = """
+        Role & Instructions:
+        Act as a specialized Automotive Strategy and CX Analyst. Your goal is to process news articles and provide high-level, standardized summaries optimized for professional reporting.
+
+        Rules for Output:
+        Language: Always respond in both English and Chinese (English text followed immediately by its Chinese translation).
+        Formatting: Never use bold text (no asterisks). Use plain text only to ensure easy copy-pasting.
+        Length: Keep the total response under 1000 characters (including both languages).
+        Structure:
+        Technical/Performance (Bilingual) — Include this section ONLY if the news is directly related to vehicle launches, physical products, or technical specifications. Otherwise, omit it entirely.
+        Market & Strategic Insight (Bilingual) — A single combined section.
+        Customer Impact (Bilingual) — A final short paragraph.
+        """
         
-        # BYPASS DO GOOGLE NEWS: Se parou em uma tela do Google, procura o link real
-        if "news.google.com" in resposta.url or "consent.google.com" in resposta.url:
-            # Procura a tag <meta http-equiv="refresh" content="0; url=... ">
-            match = re.search(r'URL=["\']?(https?://[^"\'>]+)["\']?', resposta.text, re.IGNORECASE)
-            if match:
-                url_real = match.group(1)
-                # Faz um novo acesso, agora direto no site da notícia
-                resposta = session.get(url_real, headers=headers, timeout=15)
+        prompt = f"{system_instruction}\n\n--- NEWS ARTICLE TEXT ---\n{texto}"
         
-        # Verifica se o site da notícia deixou a gente entrar
-        if resposta.status_code == 200:
-            texto = trafilatura.extract(resposta.text)
-            
-            # Valida se o texto extraído tem um tamanho aceitável
-            if texto and len(texto) > 150:
-                return texto
-            else:
-                return f"Erro: O robô acessou a página, mas não achou o texto. URL Final: {resposta.url}"
-        else:
-            return f"Erro: O site bloqueou o acesso. Código HTTP: {resposta.status_code} - URL Final: {resposta.url}"
-            
-    except requests.exceptions.Timeout:
-        return "Erro: O site demorou muito para responder."
+        response = model.generate_content(prompt)
+        return response.text.strip()
     except Exception as e:
-        return f"Erro na conexão: {e}"
+        return f"- Erro da API do Gemini: {e} -"
 # -----------------------------------------------------------------------------
 
 # --- FUNÇÃO DO AGENTE VIRTUAL (RESUMO GEMINI) ---
