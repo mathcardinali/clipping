@@ -43,6 +43,30 @@ research_topics = {
     "New Factories Progress": {
         "emoji": "🏭",
         "query": '(fábrica OR planta OR "nova fábrica" OR "linha de produção" OR "construção da fábrica" OR investimento) (montadora OR automotivo OR automotiva OR veículo)'
+    },
+    "Competitive Response": {
+        "emoji": "⚔️",
+        "query": '("guerra de preços" OR "redução de preço" OR "campanha de financiamento" OR "garantia estendida" OR "taxa zero" OR desconto OR promoção) (Fiat OR Volkswagen OR Hyundai OR Renault OR Chevrolet OR Toyota OR Stellantis OR Honda OR Nissan)'
+    },
+    "Dealer Network & After-Sales": {
+        "emoji": "🛠️",
+        "query": '(concessionária OR "rede de concessionárias" OR "pós-venda" OR recall OR "peças de reposição" OR "Reclame Aqui" OR "atendimento ao cliente" OR "satisfação do cliente" OR "assistência técnica") (automotiva OR montadora OR veículo OR carro)'
+    },
+    "Sales & Registrations": {
+        "emoji": "📈",
+        "query": '(Fenabrave OR Anfavea OR emplacamentos OR "vendas de veículos" OR "market share" OR "ranking de vendas" OR "balanço mensal" OR "mais vendidos")'
+    },
+    "Geopolitics & China-Brazil Tariffs": {
+        "emoji": "🌐",
+        "query": '("imposto de importação" OR tarifa OR "tarifa de importação" OR Mercosul OR BNDES OR "política industrial" OR "Rota 2030" OR "Mover") (China OR chinesa OR montadora) Brasil'
+    },
+    "Segment Launches": {
+        "emoji": "🚙",
+        "query": '(lançamento OR "novo modelo" OR estreia OR "chega ao Brasil" OR "pré-venda") ("SUV compacto" OR "SUV médio" OR "SUV premium" OR "sedan médio" OR hatch OR "picape média" OR "picape compacta")'
+    },
+    "Media Sentiment & Reviews": {
+        "emoji": "⭐",
+        "query": '(teste OR "test drive" OR review OR avaliação OR "comparativo" OR "Carro do Ano" OR prêmio OR "primeiras impressões" OR "primeiro contato") (automotivo OR carro OR veículo OR SUV OR sedan)'
     }
 }
 
