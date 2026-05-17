@@ -22,6 +22,46 @@ st.title("🚗 Automotive Pulse Digest")
 # Lark/Feishu Webhook
 WEBHOOK_URL = "https://open.feishu.cn/open-apis/bot/v2/hook/8f561d21-2a4c-4726-bff3-c0bf5d9c35a5"
 
+# --- BRANDS & RESEARCH TOPICS ---
+brands_by_origin = {
+    "China": ["OMODA&JAECOO", "Lepas", "BYD", "GWM", "Zeekr", "GAC", "Geely", "Leapmotor", "Chery", "Dongfeng", "Jetour"],
+    "Germany": ["Volkswagen", "BMW", "Mercedes-Benz", "Audi", "Porsche"],
+    "USA": ["Chevrolet", "Ford", "Tesla", "Ram", "Jeep"],
+    "Japan": ["Toyota", "Honda", "Nissan", "Mitsubishi", "Subaru"]
+}
+
+# Strategic Research Topics (non-brand based searches focused on Brazil context)
+research_topics = {
+    "EV Charging & Batteries": {
+        "emoji": "🔋",
+        "query": '("carro elétrico" OR "veículo elétrico" OR "bateria automotiva" OR "ponto de recarga" OR carregador OR "estação de recarga" OR "cadeia de suprimento" OR "supply chain")'
+    },
+    "Tax & ICMS Changes": {
+        "emoji": "💰",
+        "query": '(ICMS OR IPI OR "carga tributária" OR "reforma tributária" OR tributação OR "imposto sobre veículos") (automotivo OR veículo OR carro OR montadora OR automóvel)'
+    },
+    "New Factories Progress": {
+        "emoji": "🏭",
+        "query": '(fábrica OR planta OR "nova fábrica" OR "linha de produção" OR "construção da fábrica" OR investimento) (montadora OR automotivo OR automotiva OR veículo)'
+    }
+}
+
+# Brands always pinned at the top of the selection
+PRIORITY_BRANDS = ["OMODA&JAECOO", "Omoda", "Jaecoo"]
+
+def sort_priority_brands(brands):
+    priority = [b for b in PRIORITY_BRANDS if b in brands]
+    others = [b for b in brands if b not in PRIORITY_BRANDS]
+    return priority + others
+
+def is_topic(key):
+    return key in research_topics
+
+def get_section_emoji(key):
+    if is_topic(key):
+        return research_topics[key]["emoji"]
+    return "🏎️"
+
 # --- SUPPORT FUNCTIONS ---
 
 def safe_translate(text, target_lang):
@@ -139,10 +179,11 @@ def gerar_pdf_bytes(dossier_data, session_state):
         kept_items = [it for idx, it in enumerate(items) if session_state.get(f"keep_{brand}_{idx}")]
         
         if kept_items:
+            label = "TOPIC" if is_topic(brand) else "BRAND"
             pdf.set_font(font_main, 'B' if font_main == 'Helvetica' else '', 14)
             pdf.set_fill_color(240, 242, 246)
             pdf.set_text_color(0, 0, 0)
-            pdf.cell(largura_util, 10, f"  BRAND: {brand.upper()}", ln=True, fill=True)
+            pdf.cell(largura_util, 10, f"  {label}: {brand.upper()}", ln=True, fill=True)
             pdf.ln(4)
 
             for it in kept_items:
@@ -183,13 +224,6 @@ if 'd_end_str' not in st.session_state: st.session_state.d_end_str = ""
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 
 # --- 3. SIDEBAR ---
-brands_by_origin = {
-    "China": ["Omoda", "Jaecoo", "BYD", "GWM", "Zeekr", "GAC", "Geely", "Leapmotor", "Chery"],
-    "Germany": ["Volkswagen", "BMW", "Mercedes-Benz", "Audi", "Porsche"],
-    "USA": ["Chevrolet", "Ford", "Tesla", "Ram", "Jeep"],
-    "Japan": ["Toyota", "Honda", "Nissan", "Mitsubishi", "Subaru"]
-}
-
 with st.sidebar:
     st.header("⚙️ Settings")
     if gemini_api_key: st.success("✅ AI Connected")
@@ -199,8 +233,18 @@ with st.sidebar:
     target_launch = st.checkbox("🎯 Focus on Launches", value=False)
     origins = st.multiselect("Origins:", list(brands_by_origin.keys()), default=["China"])
     available = [b for o in origins for b in brands_by_origin[o]]
-    brand_selection = st.multiselect("Brands:", available, default=["Omoda", "BYD"])
+    brand_selection = st.multiselect("Brands:", available, default=["OMODA&JAECOO", "BYD"])
     
+    st.divider()
+    st.subheader("📊 Research Topics")
+    topic_selection = st.multiselect(
+        "Strategic Themes:",
+        list(research_topics.keys()),
+        default=[],
+        format_func=lambda x: f"{research_topics[x]['emoji']} {x}"
+    )
+    
+    st.divider()
     # PERÍODO: Default = Ontem a Ontem
     yesterday = datetime.now() - timedelta(days=1)
     date_range = st.date_input("Period:", value=(yesterday, yesterday))
@@ -221,14 +265,25 @@ with st.sidebar:
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
             with st.spinner("Fetching RSS feeds..."):
-                for brand in brand_selection:
-                    q = f"\"{brand}\" Brasil" + (launch_keywords if target_launch else "") + media_filter
+                # === BRANDS (Omoda & Jaecoo always first) ===
+                sorted_brands = sort_priority_brands(brand_selection)
+                
+                for brand in sorted_brands:
+                    # Special combined search for OMODA&JAECOO
+                    if brand == "OMODA&JAECOO":
+                        q_base = '("Omoda" OR "Jaecoo") Brasil'
+                        title_match = lambda t: ("omoda" in t.lower()) or ("jaecoo" in t.lower())
+                    else:
+                        q_base = f"\"{brand}\" Brasil"
+                        title_match = lambda t, b=brand: b.lower() in t.lower()
+                    
+                    q = q_base + (launch_keywords if target_launch else "") + media_filter
                     full_q = f"{q} after:{d_ini.strftime('%Y-%m-%d')} before:{d_end.strftime('%Y-%m-%d')}"
                     feed = feedparser.parse(f"https://news.google.com/rss/search?q={urllib.parse.quote_plus(full_q)}&hl=pt-BR&gl=BR")
                     
                     brand_news = []
                     for entry in feed.entries:
-                        if brand.lower() in entry.title.lower():
+                        if title_match(entry.title):
                             if hasattr(entry, 'published_parsed'):
                                 # STRICT DATE CHECK
                                 pub_date = datetime.fromtimestamp(mktime(entry.published_parsed)).date()
@@ -243,6 +298,29 @@ with st.sidebar:
                                 "link": entry.link
                             })
                     if brand_news: results_raw[brand] = brand_news[:10] # Limit to 10 max
+                
+                # === RESEARCH TOPICS (no brand-name title filter) ===
+                for topic in topic_selection:
+                    topic_q = research_topics[topic]["query"] + media_filter
+                    full_q = f"{topic_q} after:{d_ini.strftime('%Y-%m-%d')} before:{d_end.strftime('%Y-%m-%d')}"
+                    feed = feedparser.parse(f"https://news.google.com/rss/search?q={urllib.parse.quote_plus(full_q)}&hl=pt-BR&gl=BR")
+                    
+                    topic_news = []
+                    for entry in feed.entries:
+                        if hasattr(entry, 'published_parsed'):
+                            pub_date = datetime.fromtimestamp(mktime(entry.published_parsed)).date()
+                            if not (d_ini <= pub_date <= d_end): continue
+                        else:
+                            continue
+                        
+                        en_title = safe_translate(entry.title, 'en')
+                        zh_title = safe_translate(entry.title, 'zh-CN')
+                        topic_news.append({
+                            "title": f"{en_title} / {zh_title}",
+                            "link": entry.link
+                        })
+                    if topic_news: results_raw[topic] = topic_news[:10]
+            
             st.session_state.raw_fetched_news = results_raw
 
 # --- 4. SELECTION & AI PROCESSING AREA ---
@@ -253,7 +331,8 @@ if st.session_state.raw_fetched_news and not st.session_state.dossier_data:
     selected_to_process = {}
     
     for brand, items in st.session_state.raw_fetched_news.items():
-        st.subheader(f"🏎️ {brand.upper()}")
+        emoji = get_section_emoji(brand)
+        st.subheader(f"{emoji} {brand.upper()}")
         selected_to_process[brand] = []
         for idx, item in enumerate(items):
             # TELA 2: Checkbox de um lado, Título EMBEDDADO COM LINK do outro
@@ -293,7 +372,8 @@ if st.session_state.dossier_data:
     st.info("Review the summaries below before exporting.")
     
     for brand, items in st.session_state.dossier_data.items():
-        st.subheader(f"🏎️ {brand.upper()}")
+        emoji = get_section_emoji(brand)
+        st.subheader(f"{emoji} {brand.upper()}")
         for idx, item in enumerate(items):
             st.checkbox(f"✅ Include in Final PDF ({brand}-{idx+1})", value=True, key=f"keep_{brand}_{idx}")
             st.markdown(f"**Source:** [{item['title']}]({item['link']})")
@@ -340,8 +420,14 @@ if st.session_state.dossier_data:
             for brand, items in st.session_state.dossier_data.items():
                 kept = [it for idx, it in enumerate(items) if st.session_state.get(f"keep_{brand}_{idx}")]
                 if kept:
+                    # Add topic emoji prefix when it's a research theme
+                    if is_topic(brand):
+                        section_title = f"{research_topics[brand]['emoji']} {brand.upper()}"
+                    else:
+                        section_title = brand.upper()
+                    
                     links_md = [f"• [{it['title']}]({it['link']})" for it in kept]
-                    lark_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{brand.upper()}**\n" + "\n".join(links_md)}})
+                    lark_elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**{section_title}**\n" + "\n".join(links_md)}})
                     lark_elements.append({"tag": "hr"})
 
             payload = {
