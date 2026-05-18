@@ -27,9 +27,9 @@ SENT_HISTORY_FILE = "sent_history.json"
 SNAPSHOT_FILE = "clipping_snapshots.csv"
 
 # Tunable concurrency
-MAX_WORKERS_FETCH = 8       # parallel RSS feeds
-MAX_WORKERS_TRANSLATE = 6   # parallel translations
-MAX_WORKERS_EXTRACT = 4     # parallel article extractions (gentler — these hit real sites)
+MAX_WORKERS_FETCH = 8
+MAX_WORKERS_TRANSLATE = 6
+MAX_WORKERS_EXTRACT = 4
 
 # Global HTTP session (reused connections)
 HTTP_SESSION = requests.Session()
@@ -38,12 +38,26 @@ HTTP_SESSION.headers.update({
 })
 
 # --- BRANDS & RESEARCH TOPICS ---
+# Note: Jeep and Ram moved out of "USA" because they belong to the Stellantis combined block.
+# Leapmotor stays in China per requirement.
 brands_by_origin = {
     "China": ["OMODA&JAECOO", "Lepas", "BYD", "GWM", "Zeekr", "GAC", "Geely", "Leapmotor", "Chery", "Dongfeng", "Jetour"],
+    "Stellantis": ["STELLANTIS"],
     "Germany": ["Volkswagen", "BMW", "Mercedes-Benz", "Audi", "Porsche"],
-    "USA": ["Chevrolet", "Ford", "Tesla", "Ram", "Jeep"],
+    "USA": ["Chevrolet", "Ford", "Tesla"],
     "Japan": ["Toyota", "Honda", "Nissan", "Mitsubishi", "Subaru"]
 }
+
+# Brands that the user typically deselects — kept off in default selection
+EXCLUDED_BY_DEFAULT = ["Audi", "BMW", "Mercedes-Benz", "Porsche", "Subaru"]
+
+# Stellantis combined block — brands sold in Brazil (Leapmotor intentionally excluded)
+STELLANTIS_BRANDS = ["Fiat", "Jeep", "Peugeot", "Citroën", "RAM", "Dodge", "Alfa Romeo", "Chrysler"]
+# Word-boundary regex avoids false positives ("ram" in "programa", "instagram", etc.)
+STELLANTIS_REGEX = re.compile(
+    r'\b(fiat|jeep|peugeot|citro[eë]n|ram|dodge|alfa romeo|chrysler)\b',
+    re.IGNORECASE
+)
 
 research_topics = {
     "EV Charging & Batteries": {
@@ -114,6 +128,14 @@ def get_section_emoji(key):
         return research_topics[key]["emoji"]
     return "🏎️"
 
+def section_display_sort_key(section_name):
+    """Final display order: OMODA&JAECOO first, then brands A-Z, then topics A-Z."""
+    if section_name == "OMODA&JAECOO":
+        return (0, "")
+    if is_topic(section_name):
+        return (2, section_name.lower())
+    return (1, section_name.lower())
+
 # --- DEDUP & PERSISTENCE HELPERS ---
 
 def normalize_url(url):
@@ -178,9 +200,8 @@ def compute_relevance_score(item):
 
 # --- TRANSLATION (cached + lazy) ---
 
-@st.cache_data(show_spinner=False, ttl=86400)  # 24h cache
+@st.cache_data(show_spinner=False, ttl=86400)
 def cached_translate(text, target_lang):
-    """Single translation, cached. Streamlit hashes (text, target_lang) automatically."""
     if not text or len(text.strip()) == 0:
         return text
     try:
@@ -196,14 +217,12 @@ def cached_translate(text, target_lang):
         return text
 
 def translate_pair_parallel(text):
-    """Translates a single text to (en, zh) in parallel. Returns 'en / zh'."""
     with ThreadPoolExecutor(max_workers=2) as pool:
         f_en = pool.submit(cached_translate, text, 'en')
         f_zh = pool.submit(cached_translate, text, 'zh-CN')
         return f"{f_en.result()} / {f_zh.result()}"
 
 def translate_titles_batch(items, progress_callback=None):
-    """Translates a list of items' titles in parallel. Mutates 'title' in place."""
     def _translate_one(item):
         item['title_translated'] = translate_pair_parallel(item['title_pt'])
         return item
@@ -217,7 +236,7 @@ def translate_titles_batch(items, progress_callback=None):
                 progress_callback(done, len(items))
     return items
 
-# --- ARTICLE EXTRACTION (reuses global session) ---
+# --- ARTICLE EXTRACTION ---
 
 def extrair_texto_da_noticia(url):
     try:
@@ -241,10 +260,9 @@ def extrair_texto_da_noticia(url):
     except Exception as e:
         return f"- Connection error: {e} -"
 
-# --- GEMINI (model name cached once per session) ---
+# --- GEMINI ---
 
 def _get_gemini_model_name():
-    """Cached in session_state so list_models() is called once per browser session."""
     if 'gemini_model_name' in st.session_state:
         return st.session_state.gemini_model_name
     model_name = 'models/gemini-1.5-flash'
@@ -337,7 +355,6 @@ def gerar_executive_summary(dossier_data, session_state, api_key):
 # --- PARALLEL FEED FETCH ---
 
 def fetch_single_feed(section_key, query_str, d_ini, d_end, title_match_fn, seen_fingerprints_lock, seen_fingerprints, sent_history, hide_already_sent):
-    """Fetches and parses one RSS feed. Returns list of dicts (untranslated)."""
     full_q = f"{query_str} after:{d_ini.strftime('%Y-%m-%d')} before:{d_end.strftime('%Y-%m-%d')}"
     feed_url = f"https://news.google.com/rss/search?q={urllib.parse.quote_plus(full_q)}&hl=pt-BR&gl=BR"
     feed = feedparser.parse(feed_url)
@@ -354,7 +371,6 @@ def fetch_single_feed(section_key, query_str, d_ini, d_end, title_match_fn, seen
         
         fp = article_fingerprint(entry.title, entry.link)
         
-        # Thread-safe check against global dedup set
         with seen_fingerprints_lock:
             if fp in seen_fingerprints:
                 continue
@@ -365,13 +381,12 @@ def fetch_single_feed(section_key, query_str, d_ini, d_end, title_match_fn, seen
             continue
         
         item = {
-            "title_pt": entry.title,         # raw Portuguese (used in Tela 2)
-            "title_translated": "",          # filled on-demand
+            "title_pt": entry.title,
+            "title_translated": "",
             "link": entry.link,
             "fingerprint": fp,
             "already_sent": already_sent
         }
-        # Score uses the PT title since keywords are PT
         item["score"] = compute_relevance_score({"title": entry.title, "link": entry.link})
         collected.append(item)
     
@@ -466,16 +481,26 @@ with st.sidebar:
     st.divider()
     
     target_launch = st.checkbox("🎯 Focus on Launches", value=False)
-    origins = st.multiselect("Origins:", list(brands_by_origin.keys()), default=["China"])
+    
+    # All origins selected by default
+    origins = st.multiselect(
+        "Origins:",
+        list(brands_by_origin.keys()),
+        default=list(brands_by_origin.keys())
+    )
     available = [b for o in origins for b in brands_by_origin[o]]
-    brand_selection = st.multiselect("Brands:", available, default=["OMODA&JAECOO", "BYD"])
+    
+    # All brands selected by default EXCEPT the typical drop list
+    default_brands = [b for b in available if b not in EXCLUDED_BY_DEFAULT]
+    brand_selection = st.multiselect("Brands:", available, default=default_brands)
     
     st.divider()
     st.subheader("📊 Research Topics")
+    # All topics selected by default
     topic_selection = st.multiselect(
         "Strategic Themes:",
         list(research_topics.keys()),
-        default=[],
+        default=list(research_topics.keys()),
         format_func=lambda x: f"{research_topics[x]['emoji']} {x}"
     )
     
@@ -502,7 +527,6 @@ with st.sidebar:
             launch_keywords = " (lançamento OR segredo OR flagra OR novidade OR \"modelo 2027\" OR \"modelo 2026\")"
             media_filter = " (site:g1.globo.com OR site:uol.com.br OR site:estadao.com.br OR site:folha.uol.com.br OR site:quatrorodas.abril.com.br OR site:autoesporte.globo.com OR site:motor1.uol.com.br)"
             
-            # Build the list of fetch tasks BEFORE submitting to executor
             fetch_tasks = []
             sorted_brands = sort_priority_brands(brand_selection)
             
@@ -510,18 +534,23 @@ with st.sidebar:
                 if brand == "OMODA&JAECOO":
                     q_base = '("Omoda" OR "Jaecoo") Brasil'
                     title_match = (lambda t: ("omoda" in t.lower()) or ("jaecoo" in t.lower()))
+                elif brand == "STELLANTIS":
+                    # Quoted OR-list of all Stellantis brands sold in Brazil
+                    quoted = " OR ".join(f'"{b}"' for b in STELLANTIS_BRANDS)
+                    q_base = f'({quoted}) Brasil'
+                    # Regex with word boundaries (avoids "ram" matching "programa", "instagram", etc.)
+                    title_match = (lambda t: bool(STELLANTIS_REGEX.search(t)))
                 else:
                     q_base = f"\"{brand}\" Brasil"
                     title_match = (lambda t, b=brand: b.lower() in t.lower())
                 
                 q = q_base + (launch_keywords if target_launch else "") + media_filter
-                fetch_tasks.append((brand, q, title_match, False))  # False = is_topic
+                fetch_tasks.append((brand, q, title_match, False))
             
             for topic in topic_selection:
                 topic_q = research_topics[topic]["query"] + media_filter
                 fetch_tasks.append((topic, topic_q, lambda t: True, True))
             
-            # Run all RSS fetches in parallel
             import threading
             seen_fingerprints = set()
             seen_lock = threading.Lock()
@@ -529,8 +558,6 @@ with st.sidebar:
             
             progress = st.progress(0, text=f"Fetching {len(fetch_tasks)} feeds in parallel...")
             
-            # Brands must be processed BEFORE topics for dedup priority — so we run
-            # brand fetches first as a batch, then topic fetches as a batch.
             brand_tasks = [t for t in fetch_tasks if not t[3]]
             topic_tasks = [t for t in fetch_tasks if t[3]]
             
@@ -559,8 +586,14 @@ with st.sidebar:
                         completed += 1
                         progress.progress(completed / total, text=f"Fetched {completed}/{total} feeds")
             
-            # Optional: pre-translate titles right now if user opted in.
-            # Default behavior is to defer translation until AI summarization step.
+            # === Final display order ===
+            # OMODA&JAECOO first, other brands A-Z, topics A-Z.
+            # Parallel fetches finish in arbitrary order, so we reorder here.
+            results_raw = {
+                k: results_raw[k]
+                for k in sorted(results_raw.keys(), key=section_display_sort_key)
+            }
+            
             if translate_in_fetch:
                 progress.progress(1.0, text="Translating titles...")
                 all_items = [it for items in results_raw.values() for it in items]
@@ -599,7 +632,6 @@ if st.session_state.raw_fetched_news and not st.session_state.dossier_data:
                 elif item.get("score", 0) >= 5:
                     badges.append(f"score {item['score']}")
                 badge_str = f" `[{' · '.join(badges)}]`" if badges else ""
-                # Show translated title if already cached, otherwise PT
                 display_title = item.get("title_translated") or item.get("title_pt") or ""
                 st.markdown(f"**[{display_title}]({item['link']})**{badge_str}")
 
@@ -609,7 +641,6 @@ if st.session_state.raw_fetched_news and not st.session_state.dossier_data:
         if has_selections == 0:
             st.warning("Please select at least one article to process.")
         else:
-            # STEP A: Translate titles of selected items in parallel (only those missing translation)
             to_translate = []
             for items in selected_to_process.values():
                 for it in items:
@@ -623,21 +654,21 @@ if st.session_state.raw_fetched_news and not st.session_state.dossier_data:
                 translate_titles_batch(to_translate, progress_callback=_cb)
                 tbar.empty()
             
-            # STEP B: Extract + summarize sequentially (Gemini rate limits + politeness to sites)
             final_dossier = {}
             total_items = sum(len(v) for v in selected_to_process.values())
             sbar = st.progress(0, text="Extracting & summarizing...")
             done = 0
             
-            # Extract texts in parallel first (I/O bound)
             extract_queue = []
-            for brand, items in selected_to_process.items():
+            # Iterate selected_to_process in the same order as raw_fetched_news (already sorted)
+            for brand in st.session_state.raw_fetched_news.keys():
+                items = selected_to_process.get(brand, [])
                 if items:
                     final_dossier[brand] = []
                     for it in items:
                         extract_queue.append((brand, it))
             
-            extracted_texts = {}  # id(item) -> raw text
+            extracted_texts = {}
             with ThreadPoolExecutor(max_workers=MAX_WORKERS_EXTRACT) as pool:
                 futures = {pool.submit(extrair_texto_da_noticia, it['link']): (brand, it) for brand, it in extract_queue}
                 for future in as_completed(futures):
@@ -646,12 +677,11 @@ if st.session_state.raw_fetched_news and not st.session_state.dossier_data:
                     done += 1
                     sbar.progress(done / (total_items * 2), text=f"Extracted {done}/{total_items} articles")
             
-            # Now summarize sequentially (Gemini free tier has tight rate limits)
             done = 0
             for brand, it in extract_queue:
                 texto_raw = extracted_texts.get(id(it), "- Extraction failed -")
                 resumo = resumir_noticia_com_gemini(texto_raw, gemini_api_key)
-                time.sleep(1)  # reduced from 2s — extraction is no longer happening here
+                time.sleep(1)
                 final_dossier[brand].append({
                     "title": it.get('title_translated') or it.get('title_pt'),
                     "link": it['link'],
